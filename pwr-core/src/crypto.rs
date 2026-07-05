@@ -10,7 +10,6 @@
 
 use age::x25519::{Identity, Recipient};
 use ring::rand::SecureRandom;
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
@@ -215,25 +214,19 @@ pub fn age_decrypt(encrypted: &[u8], identity: &Identity) -> Result<Vec<u8>> {
 }
 
 // ---------------------------------------------------------------------------
-// SHA-256 hashing (integrity)
+// SHA-256 hashing (delegates to integrity module)
 // ---------------------------------------------------------------------------
 
 /// Compute the SHA-256 hash of a byte slice, returned as a hex string.
+/// Delegates to the integrity module for the canonical implementation.
 pub fn sha256_hex(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    format!("{:x}", hasher.finalize())
+    crate::integrity::hash_bytes(data)
 }
 
 /// Compute the SHA-256 hash of a file, returned as a hex string.
-///
-/// Reads the file in 64 KiB chunks to avoid loading large files
-/// entirely into memory.
+/// Delegates to the integrity module for the canonical implementation.
 pub fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher)?;
-    Ok(format!("{:x}", hasher.finalize()))
+    crate::integrity::hash_file(path)
 }
 
 // ---------------------------------------------------------------------------
