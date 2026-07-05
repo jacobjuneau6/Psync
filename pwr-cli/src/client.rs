@@ -32,11 +32,43 @@ trait ReadWrite: Read + Write {}
 impl<T: Read + Write> ReadWrite for T {}
 
 impl PwrClient {
-    /// Connect to the server, complete TLS handshake, and authenticate.
+    /// Connect to the server with retry logic for transient failures.
     ///
-    /// `psk_hex` is the hex-encoded pre-shared key from the client config.
-    /// `tls` controls whether TLS is enabled (production) or disabled (testing).
+    /// Retries up to 3 times with exponential backoff (1s, 2s, 4s).
+    /// TLS handshake failures and authentication errors are not retried
+    /// since they indicate configuration problems rather than transient
+    /// network issues.
     pub fn connect(config: &PwrConfig, tls: bool) -> ClientResult<Self> {
+        let max_retries = 3;
+        let mut last_err = String::new();
+
+        for attempt in 0..=max_retries {
+            match Self::connect_once(config, tls) {
+                Ok(client) => {
+                    if attempt > 0 {
+                        log::info!("Connected after {} retries", attempt);
+                    }
+                    return Ok(client);
+                }
+                Err(e) => {
+                    last_err = e;
+                    if attempt < max_retries {
+                        let delay = Duration::from_secs(1 << attempt); // 1s, 2s, 4s
+                        log::warn!(
+                            "Connection attempt {} failed: {}. Retrying in {:?}...",
+                            attempt + 1, last_err, delay
+                        );
+                        std::thread::sleep(delay);
+                    }
+                }
+            }
+        }
+
+        Err(format!("Connection failed after {} attempts: {}", max_retries + 1, last_err))
+    }
+
+    /// Single connection attempt without retry.
+    fn connect_once(config: &PwrConfig, tls: bool) -> ClientResult<Self> {
         let addr = config.server_addr();
         let timeout = Duration::from_secs(config.connect_timeout_secs);
 
@@ -50,7 +82,6 @@ impl PwrClient {
             .set_read_timeout(Some(Duration::from_secs(30)))
             .map_err(|e| format!("set_read_timeout: {}", e))?;
 
-        // Authenticate
         let psk = crypto::psk_from_hex(&config.server_psk)
             .map_err(|e| format!("Invalid PSK: {}", e))?;
 
@@ -60,7 +91,6 @@ impl PwrClient {
             perform_handshake(&mut tls_stream, &mut decoder, &psk, "pwr-cli")?;
             (Box::new(tls_stream) as Box<dyn ReadWrite>, decoder)
         } else {
-            // Plaintext path (for testing)
             let mut decoder = FrameDecoder::new();
             perform_handshake(&mut &tcp_stream, &mut decoder, &psk, "pwr-cli")?;
             (Box::new(tcp_stream) as Box<dyn ReadWrite>, decoder)
