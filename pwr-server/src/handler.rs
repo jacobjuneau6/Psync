@@ -4,6 +4,10 @@
 //! AwaitingHandshake → Authenticated → (Archiving | Restoring | Idle).
 //! After authentication, the handler loops reading frames and dispatching
 //! to the appropriate operation handler until the client disconnects.
+//!
+//! Note: parentheses around `impl Read + Write` in argument position are
+//! required by Rust 2024 edition to disambiguate `&mut (impl A + B)` from
+//! `(&mut impl A) + B`. The `unused_parens` warning is suppressed.
 
 use pwr_core::frame::{FrameDecoder, FrameHeader};
 use pwr_core::protocol::{
