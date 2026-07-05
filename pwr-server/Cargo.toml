@@ -1,0 +1,34 @@
+[package]
+name = "pwr-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "pwr daemon: runs on the NAS, handles project storage and retrieval over TLS"
+
+[[bin]]
+name = "pwr-server"
+path = "src/main.rs"
+
+[dependencies]
+pwr-core = { path = "../pwr-core" }
+tokio.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-pemfile.workspace = true
+rcgen.workspace = true
+ring.workspace = true
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+log.workspace = true
+dirs.workspace = true

@@ -1,0 +1,45 @@
+[package]
+name = "pwr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "pwr: Lazy project archiver — client CLI and TUI for the pwr-server daemon"
+
+[[bin]]
+name = "pwr"
+path = "src/main.rs"
+
+[dependencies]
+pwr-core = { path = "../pwr-core" }
+tokio.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+ring.workspace = true
+sha2.workspace = true
+age.workspace = true
+tar.workspace = true
+flate2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+indicatif.workspace = true
+console.workspace = true
+dirs.workspace = true
+log.workspace = true
+env_logger.workspace = true
+tempfile.workspace = true
+
+# TUI (optional, behind feature flag)
+ratatui = { workspace = true, optional = true }
+crossterm = { workspace = true, optional = true }
+
+[features]
+default = []
+tui = ["ratatui", "crossterm"]
