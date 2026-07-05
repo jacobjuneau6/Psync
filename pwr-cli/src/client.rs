@@ -11,7 +11,7 @@ use std::time::Duration;
 use pwr_core::config::PwrConfig;
 use pwr_core::crypto;
 use pwr_core::frame::{self, FrameDecoder};
-use pwr_core::protocol::*;
+use pwr_core::protocol::{self, ClientMessage, Handshake, ProjectInfo, ServerMessage};
 use ring::rand::SecureRandom;
 
 /// Result type for client operations.
@@ -74,58 +74,51 @@ impl PwrClient {
         archive_data: &[u8],
         archive_hash: &str,
     ) -> ClientResult<()> {
-        // Send ArchiveRequest
-        let req = ArchiveRequest {
-            project_uuid: *project_uuid,
-            project_name: project_name.to_string(),
-            total_size: archive_data.len() as u64,
-            file_count: 1, // Single archive blob
-            compression: true,
-        };
-        send_frame(&mut self.stream, &req, MessageType::ArchiveRequest)?;
+        // Send ArchiveRequest using protocol builder
+        let req = protocol::build_archive_request(
+            *project_uuid,
+            project_name,
+            archive_data.len() as u64,
+            1, // Single archive blob
+            true,
+        );
+        send_client_msg(&mut self.stream, &req)?;
 
         // Receive ArchiveAccept
-        let (_header, payload) = recv_frame(&mut self.stream, &mut self.decoder)?;
-        let _accept: ArchiveAccept = serde_json::from_slice(&payload)
-            .map_err(|e| format!("bad ArchiveAccept: {}", e))?;
+        match recv_server_msg(&mut self.stream, &mut self.decoder)? {
+            ServerMessage::ArchiveAccept(accept) => {
+                log::debug!("Archive accepted, session {}", accept.session_id);
+            }
+            ServerMessage::Error(e) => return Err(format!("Server rejected: {}", e.message)),
+            other => return Err(format!("Unexpected response: {:?}", other.message_type())),
+        }
 
         // Stream the archive data in chunks
         let chunk_size = 1024 * 1024; // 1 MiB
         for (i, chunk) in archive_data.chunks(chunk_size).enumerate() {
-            // Send raw chunk data (4-byte length prefix + data)
             self.stream
                 .write_all(&(chunk.len() as u32).to_be_bytes())
-                .map_err(|e| format!("chunk write error: {}", e))?;
+                .map_err(|e| format!("chunk write: {}", e))?;
             self.stream
                 .write_all(chunk)
-                .map_err(|e| format!("chunk data write error: {}", e))?;
-
+                .map_err(|e| format!("chunk data write: {}", e))?;
             log::debug!("Sent chunk {} ({} bytes)", i, chunk.len());
         }
 
         // Send EOF marker
         self.stream
             .write_all(&0u32.to_be_bytes())
-            .map_err(|e| format!("eof write error: {}", e))?;
-        self.stream
-            .flush()
-            .map_err(|e| format!("flush error: {}", e))?;
+            .map_err(|e| format!("eof write: {}", e))?;
+        self.stream.flush().map_err(|e| format!("flush: {}", e))?;
 
         // Send ArchiveComplete
-        let complete = ArchiveComplete {
-            success: true,
-            total_size: archive_data.len() as u64,
-            archive_hash: archive_hash.to_string(),
-            error: None,
-        };
-        send_frame(&mut self.stream, &complete, MessageType::ArchiveComplete)?;
-
-        log::info!(
-            "Archive sent: {} bytes, hash: {}",
-            archive_data.len(),
-            archive_hash
+        let complete = protocol::build_archive_complete(
+            archive_data.len() as u64,
+            archive_hash,
         );
+        send_client_msg(&mut self.stream, &complete)?;
 
+        log::info!("Archive sent: {} bytes, hash: {}", archive_data.len(), archive_hash);
         Ok(())
     }
 
@@ -138,34 +131,29 @@ impl PwrClient {
         project_uuid: &uuid::Uuid,
     ) -> ClientResult<Vec<u8>> {
         // Send RestoreRequest
-        let req = RestoreRequest {
-            project_uuid: *project_uuid,
-        };
-        send_frame(&mut self.stream, &req, MessageType::RestoreRequest)?;
+        let req = protocol::build_restore_request(*project_uuid);
+        send_client_msg(&mut self.stream, &req)?;
 
         // Receive RestoreAccept
-        let (_header, payload) = recv_frame(&mut self.stream, &mut self.decoder)?;
-        let accept: RestoreAccept = serde_json::from_slice(&payload)
-            .map_err(|e| format!("bad RestoreAccept: {}", e))?;
-
-        log::info!(
-            "Restoring {} bytes ({} files)",
-            accept.total_size,
-            accept.file_count
-        );
+        let (total_size, _file_count) = match recv_server_msg(&mut self.stream, &mut self.decoder)? {
+            ServerMessage::RestoreAccept(accept) => {
+                log::info!("Restoring {} bytes ({} files)", accept.total_size, accept.file_count);
+                (accept.total_size, accept.file_count)
+            }
+            ServerMessage::Error(e) => return Err(format!("Server rejected: {}", e.message)),
+            other => return Err(format!("Unexpected response: {:?}", other.message_type())),
+        };
 
         // Receive raw chunk data until EOF
-        let mut data = Vec::with_capacity(accept.total_size as usize);
+        let mut data = Vec::with_capacity(total_size as usize);
         let mut header_buf = [0u8; 4];
 
         loop {
-            // Read 4-byte chunk length
             self.stream
                 .read_exact(&mut header_buf)
                 .map_err(|e| format!("chunk header read: {}", e))?;
 
             let chunk_len = u32::from_be_bytes(header_buf) as usize;
-
             if chunk_len == 0 {
                 break; // EOF
             }
@@ -178,7 +166,6 @@ impl PwrClient {
         }
 
         log::info!("Restored {} bytes", data.len());
-
         Ok(data)
     }
 
@@ -187,16 +174,16 @@ impl PwrClient {
         &mut self,
         project_uuid: Option<&uuid::Uuid>,
     ) -> ClientResult<Vec<ProjectInfo>> {
-        let req = StatusRequest {
-            project_uuid: project_uuid.copied(),
-        };
-        send_frame(&mut self.stream, &req, MessageType::StatusRequest)?;
+        let req = protocol::ClientMessage::StatusRequest(
+            protocol::StatusRequest { project_uuid: project_uuid.copied() },
+        );
+        send_client_msg(&mut self.stream, &req)?;
 
-        let (_header, payload) = recv_frame(&mut self.stream, &mut self.decoder)?;
-        let response: StatusResponse = serde_json::from_slice(&payload)
-            .map_err(|e| format!("bad StatusResponse: {}", e))?;
-
-        Ok(response.projects)
+        match recv_server_msg(&mut self.stream, &mut self.decoder)? {
+            ServerMessage::StatusResponse(response) => Ok(response.projects),
+            ServerMessage::Error(e) => Err(format!("Server error: {}", e.message)),
+            other => Err(format!("Unexpected response: {:?}", other.message_type())),
+        }
     }
 }
 
@@ -211,7 +198,6 @@ fn perform_handshake(
     psk: &[u8; 32],
     client_id: &str,
 ) -> ClientResult<()> {
-    // Generate nonce and proof
     let mut nonce = [0u8; 32];
     ring::rand::SystemRandom::new()
         .fill(&mut nonce)
@@ -220,65 +206,66 @@ fn perform_handshake(
     let proof = crypto::compute_client_proof(psk, &nonce);
 
     // Send Handshake
-    let hs = Handshake {
+    let hs = ClientMessage::Handshake(Handshake {
         version: frame::PROTOCOL_VERSION,
         client_id: client_id.to_string(),
         nonce,
         proof,
-    };
-    send_frame(stream, &hs, MessageType::Handshake)?;
+    });
+    send_client_msg(stream, &hs)?;
 
     // Receive HandshakeAck
-    let (_header, payload) = recv_frame(stream, decoder)?;
-    let ack: HandshakeAck = serde_json::from_slice(&payload)
-        .map_err(|e| format!("bad HandshakeAck: {}", e))?;
+    match recv_server_msg(stream, decoder)? {
+        ServerMessage::HandshakeAck(ack) => {
+            if !ack.success {
+                return Err(format!(
+                    "Authentication failed: {}",
+                    ack.reason.unwrap_or_default()
+                ));
+            }
 
-    if !ack.success {
-        return Err(format!(
-            "Authentication failed: {}",
-            ack.reason.unwrap_or_default()
-        ));
+            // Verify server proof (mutual auth)
+            let expected = crypto::compute_server_proof(psk, &nonce, &ack.server_nonce);
+            if expected != ack.server_proof {
+                return Err("Server authentication failed: invalid proof".into());
+            }
+
+            log::info!("Authenticated to server v{}", ack.server_version);
+            Ok(())
+        }
+        ServerMessage::Error(e) => Err(format!("Server rejected handshake: {}", e.message)),
+        other => Err(format!("Unexpected handshake response: {:?}", other.message_type())),
     }
-
-    // Verify server proof (mutual auth)
-    let expected_server_proof =
-        crypto::compute_server_proof(psk, &nonce, &ack.server_nonce);
-
-    if expected_server_proof != ack.server_proof {
-        return Err("Server authentication failed: invalid server proof".into());
-    }
-
-    log::info!("Authenticated to server v{}", ack.server_version);
-    Ok(())
 }
 
-/// Send a framed message on the stream.
-fn send_frame(
+/// Send a ClientMessage as a framed message on the stream.
+fn send_client_msg(
     stream: &mut impl Write,
-    msg: &impl serde::Serialize,
-    msg_type: MessageType,
+    msg: &ClientMessage,
 ) -> ClientResult<()> {
-    let frame = frame::encode_frame(msg, msg_type)
+    let frame = frame::encode_frame(msg, msg.message_type())
         .map_err(|e| format!("encode: {}", e))?;
-    stream
-        .write_all(&frame)
-        .map_err(|e| format!("write: {}", e))?;
+    stream.write_all(&frame).map_err(|e| format!("write: {}", e))?;
     stream.flush().map_err(|e| format!("flush: {}", e))?;
     Ok(())
 }
 
-/// Receive one framed message from the stream.
+/// Receive one ServerMessage from the stream.
 ///
-/// Reads from the stream until a complete frame is decoded.
-fn recv_frame(
+/// Reads from the stream until a complete frame is decoded, then
+/// deserializes the payload using the typed server message decoder.
+fn recv_server_msg(
     stream: &mut impl Read,
     decoder: &mut FrameDecoder,
-) -> ClientResult<(frame::FrameHeader, Vec<u8>)> {
+) -> ClientResult<ServerMessage> {
     let mut buf = [0u8; 8192];
 
     loop {
-        if let Some(result) = decoder.try_decode().map_err(|e| format!("decode: {}", e))? {
-            return Ok(result);
+        if let Some((header, payload)) = decoder.try_decode()
+            .map_err(|e| format!("decode: {}", e))?
+        {
+            return protocol::decode_server_message(header.msg_type, &payload)
+                .map_err(|e| format!("deserialize: {}", e));
         }
 
         let n = stream.read(&mut buf).map_err(|e| format!("read: {}", e))?;
