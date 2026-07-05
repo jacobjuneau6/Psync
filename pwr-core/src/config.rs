@@ -100,6 +100,11 @@ pub fn transaction_log_path() -> PathBuf {
     config_dir().join("transactions.log")
 }
 
+/// Check whether a config file exists without loading it.
+pub fn config_exists() -> bool {
+    config_path().exists()
+}
+
 /// Load the client config from disk, or return NoConfig if it doesn't exist.
 pub fn load_config() -> Result<PwrConfig> {
     let path = config_path();
