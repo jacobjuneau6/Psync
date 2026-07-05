@@ -126,7 +126,9 @@ fn dispatch(
 
         // --- Archive flow ---
         (ConnState::Authenticated, ClientMessage::ArchiveRequest(req)) => {
-            handle_archive_start(stream, state, &req, ctx)
+            handle_archive_start(stream, state, &req, ctx)?;
+            // After accepting, receive raw chunk data for the archive blob
+            handle_archive_chunks(stream, state, ctx)
         }
         (ConnState::Archiving(_), ClientMessage::ArchiveComplete(complete)) => {
             handle_archive_finish(stream, state, &complete, ctx)
@@ -134,7 +136,9 @@ fn dispatch(
 
         // --- Restore flow ---
         (ConnState::Authenticated, ClientMessage::RestoreRequest(req)) => {
-            handle_restore_start(stream, state, &req, ctx)
+            handle_restore_start(stream, state, &req, ctx)?;
+            // After accepting, stream raw chunk data back to client
+            handle_restore_chunks(stream, state, ctx)
         }
 
         // --- Status query ---
@@ -308,6 +312,135 @@ fn handle_archive_finish(
         project_name, complete.total_size,
         &complete.archive_hash[..16.min(complete.archive_hash.len())]
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Archive chunk streaming
+// ---------------------------------------------------------------------------
+
+/// Receive raw chunk data from the client and write it to the project's
+/// archive file on disk. Chunks use the 4-byte length-prefixed format
+/// with a zero-length chunk indicating EOF.
+fn handle_archive_chunks(
+    stream: &mut (impl Read + Write),
+    state: &ConnState,
+    ctx: &HandlerContext,
+) -> Result<(), String> {
+    let (project_uuid, _total_size) = match state {
+        ConnState::Archiving(s) => (s.project_uuid, s.total_size),
+        _ => return Err("Not in archiving state".into()),
+    };
+
+    let mut total_bytes = 0u64;
+    let mut header_buf = [0u8; 4];
+
+    loop {
+        // Read 4-byte chunk length
+        stream
+            .read_exact(&mut header_buf)
+            .map_err(|e| format!("chunk header read: {}", e))?;
+
+        let chunk_len = u32::from_be_bytes(header_buf) as usize;
+
+        if chunk_len == 0 {
+            break; // EOF
+        }
+
+        // Read chunk data into a buffer and write to archive
+        let mut chunk = vec![0u8; chunk_len];
+        stream
+            .read_exact(&mut chunk)
+            .map_err(|e| format!("chunk data read: {}", e))?;
+
+        total_bytes += chunk_len as u64;
+
+        // Write chunk to the archive file
+        {
+            let storage = ctx.storage.read().unwrap();
+            let archive_path = storage.archive_path(&project_uuid);
+
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&archive_path)
+                .map_err(|e| format!("Cannot open archive: {}", e))?;
+            file.write_all(&chunk)
+                .map_err(|e| format!("Cannot write chunk: {}", e))?;
+        }
+
+        log::debug!(
+            "Received chunk: {} bytes (total: {})",
+            chunk_len,
+            total_bytes
+        );
+    }
+
+    log::info!(
+        "Archive data received: {} bytes for project {}",
+        total_bytes,
+        project_uuid
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Restore chunk streaming
+// ---------------------------------------------------------------------------
+
+/// Stream the project's archive file back to the client in chunked format.
+fn handle_restore_chunks(
+    stream: &mut (impl Read + Write),
+    state: &ConnState,
+    ctx: &HandlerContext,
+) -> Result<(), String> {
+    let project_uuid = match state {
+        ConnState::Restoring(s) => s.project_uuid,
+        _ => return Err("Not in restoring state".into()),
+    };
+
+    // Read the archive file from disk
+    let archive_data = {
+        let storage = ctx.storage.read().unwrap();
+        let mut reader = storage
+            .read_archive(&project_uuid)
+            .map_err(|e| format!("Cannot read archive: {}", e))?;
+        let mut data = Vec::new();
+        std::io::Read::read_to_end(&mut reader, &mut data)
+            .map_err(|e| format!("Cannot read archive data: {}", e))?;
+        data
+    };
+
+    // Stream in chunks
+    let chunk_size: usize = 1024 * 1024; // 1 MiB
+    let mut total_sent = 0u64;
+
+    for chunk in archive_data.chunks(chunk_size) {
+        // Write 4-byte length prefix + chunk data
+        stream
+            .write_all(&(chunk.len() as u32).to_be_bytes())
+            .map_err(|e| format!("chunk header write: {}", e))?;
+        stream
+            .write_all(chunk)
+            .map_err(|e| format!("chunk data write: {}", e))?;
+
+        total_sent += chunk.len() as u64;
+    }
+
+    // Send EOF marker
+    stream
+        .write_all(&0u32.to_be_bytes())
+        .map_err(|e| format!("eof write: {}", e))?;
+    stream.flush().map_err(|e| format!("flush: {}", e))?;
+
+    log::info!(
+        "Restore data sent: {} bytes for project {}",
+        total_sent,
+        project_uuid
+    );
+
     Ok(())
 }
 
