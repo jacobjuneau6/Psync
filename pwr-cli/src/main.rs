@@ -472,6 +472,8 @@ fn cmd_status(recursive: bool, _use_tls: bool) -> Result<(), String> {
         local, archived, projects.len()
     );
 
+    println!("Server: {}:{}", config.server_host, config.server_port);
+
     Ok(())
 }
 
