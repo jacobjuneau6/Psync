@@ -3,8 +3,7 @@
 //! Archives projects to a pwr-server daemon on a NAS and restores
 //! them on demand. Supports CLI mode and an optional TUI.
 
-pub mod client;
-mod progress;
+mod client;
 
 use std::path::PathBuf;
 
@@ -51,10 +50,6 @@ enum Commands {
         /// Dry run — show what would happen without doing it
         #[arg(long, short = 'n')]
         dry_run: bool,
-
-        /// Use TLS for the server connection
-        #[arg(long)]
-        tls: bool,
     },
 
     /// Restore a project from the server
@@ -65,10 +60,6 @@ enum Commands {
         /// Dry run — show what would happen without doing it
         #[arg(long, short = 'n')]
         dry_run: bool,
-
-        /// Use TLS for the server connection
-        #[arg(long)]
-        tls: bool,
     },
 
     /// Ensure a project is local (for shell wrapper integration)
@@ -79,10 +70,6 @@ enum Commands {
         /// Suppress output
         #[arg(long, short = 'q')]
         quiet: bool,
-
-        /// Use TLS for the server connection
-        #[arg(long)]
-        tls: bool,
     },
 
     /// Show status of all tracked projects
@@ -90,10 +77,6 @@ enum Commands {
         /// Search recursively for projects
         #[arg(long, short = 'r')]
         recursive: bool,
-
-        /// Use TLS for the server connection
-        #[arg(long)]
-        tls: bool,
     },
 
     /// List all tracked projects with paths
@@ -101,10 +84,6 @@ enum Commands {
         /// Search recursively for projects
         #[arg(long, short = 'r')]
         recursive: bool,
-
-        /// Use TLS for the server connection
-        #[arg(long)]
-        tls: bool,
     },
 
     /// Generate shell integration script
@@ -116,10 +95,6 @@ enum Commands {
         /// Print initialization instructions
         #[arg(long)]
         init: bool,
-
-        /// Automatically append to the shell rc file
-        #[arg(long)]
-        auto_install: bool,
     },
 
     /// Show transaction history
@@ -130,10 +105,6 @@ enum Commands {
         /// Show error details
         #[arg(long, short = 'e')]
         errors: bool,
-
-        /// Limit the number of entries shown
-        #[arg(long, default_value = "50")]
-        limit: usize,
     },
 }
 
@@ -152,25 +123,25 @@ fn main() {
             local_root,
         } => cmd_init(server_host, server_port, psk, local_root),
 
-        Commands::Archive { path, dry_run, tls } => cmd_archive(path, dry_run, tls),
+        Commands::Archive { path, dry_run } => cmd_archive(path, dry_run),
 
-        Commands::Restore { path, dry_run, tls } => cmd_restore(path, dry_run, tls),
+        Commands::Restore { path, dry_run } => cmd_restore(path, dry_run),
 
-        Commands::Ensure { path, quiet, tls } => cmd_ensure(path, quiet, tls),
+        Commands::Ensure { path, quiet } => cmd_ensure(path, quiet),
 
-        Commands::Status { recursive, tls } => cmd_status(recursive, tls),
+        Commands::Status { recursive } => cmd_status(recursive),
 
-        Commands::List { recursive, tls } => cmd_list(recursive, tls),
+        Commands::List { recursive } => cmd_list(recursive),
 
-        Commands::Shell { shell, init, auto_install } => {
-            if init || auto_install {
-                cmd_shell_init(&shell, auto_install)
+        Commands::Shell { shell, init } => {
+            if init {
+                cmd_shell_init(&shell)
             } else {
                 cmd_shell(&shell)
             }
         }
 
-        Commands::Log { project, errors, limit } => cmd_log(project, errors, limit),
+        Commands::Log { project, errors } => cmd_log(project, errors),
     };
 
     if let Err(err) = result {
@@ -224,7 +195,7 @@ fn cmd_init(
     Ok(())
 }
 
-fn cmd_archive(path: PathBuf, dry_run: bool, use_tls: bool) -> Result<(), String> {
+fn cmd_archive(path: PathBuf, dry_run: bool) -> Result<(), String> {
     use pwr_core::config::load_config;
     use pwr_core::project;
 
@@ -279,41 +250,26 @@ fn cmd_archive(path: PathBuf, dry_run: bool, use_tls: bool) -> Result<(), String
         .map_err(|e| format!("Cannot load age identity: {}", e))?;
     let public_key = identity.to_public().to_string();
 
-    // Create encrypted archive with progress bar
-    let pb = progress::archive_progress_bar(size);
-    let pb2 = pb.clone();
-
-    let cb: pwr_core::archive::ProgressFn = Box::new(move |stage, frac| {
-        progress::update_archive_progress(&pb2, stage, frac);
-    });
-    let (encrypted, hash) = pwr_core::archive::create_archive_with_progress(
-        &abs_path,
-        &public_key,
-        Some(&cb),
-    )
-    .map_err(|e| format!("Archive creation failed: {}", e))?;
-    pb.finish_and_clear();
+    // Create encrypted archive
+    println!("Creating encrypted archive...");
+    let (encrypted, hash) =
+        pwr_core::archive::create_archive(&abs_path, &public_key)
+            .map_err(|e| format!("Archive creation failed: {}", e))?;
 
     println!(
-        "Encrypted archive: {} (SHA-256: {})",
+        "Encrypted archive: {} bytes (SHA-256: {})",
         pwr_core::metadata::human_size(encrypted.len() as u64),
         &hash[..16]
     );
 
-    // Connect to server and upload with retry
-    let mut client = client::with_retry(
-        || client::PwrClient::connect(&config, use_tls),
-        3, 1000,
-        |e| client::is_retryable_error(e),
-    )
-    .map_err(|e| format!("Connection failed: {}", e))?;
+    // Connect to server and upload
+    println!("Connecting to {}...", config.server_addr());
+    let mut client = client::PwrClient::connect(&config, false)
+        .map_err(|e| format!("Connection failed: {}", e))?;
 
-    let upload_pb = progress::archive_progress_bar(encrypted.len() as u64);
-    upload_pb.set_message("Uploading to server...");
     client
         .archive_project(&meta.uuid, project_name, &encrypted, &hash)
         .map_err(|e| format!("Archive failed: {}", e))?;
-    upload_pb.finish_and_clear();
 
     // Update local metadata and clean up
     let file_count = project::file_count(&abs_path).map_err(|e| format!("{}", e))?;
@@ -331,7 +287,7 @@ fn cmd_archive(path: PathBuf, dry_run: bool, use_tls: bool) -> Result<(), String
     Ok(())
 }
 
-fn cmd_restore(path: PathBuf, dry_run: bool, use_tls: bool) -> Result<(), String> {
+fn cmd_restore(path: PathBuf, dry_run: bool) -> Result<(), String> {
     use pwr_core::config::load_config;
     use pwr_core::project;
 
@@ -363,31 +319,22 @@ fn cmd_restore(path: PathBuf, dry_run: bool, use_tls: bool) -> Result<(), String
         return Ok(());
     }
 
-    // Connect and download with retry
-    let mut client = client::with_retry(
-        || client::PwrClient::connect(&config, use_tls),
-        3, 1000,
-        |e| client::is_retryable_error(e),
-    )
-    .map_err(|e| format!("Connection failed: {}", e))?;
+    // Connect and download
+    let mut client = client::PwrClient::connect(&config, false)
+        .map_err(|e| format!("Connection failed: {}", e))?;
 
-    let download_pb = progress::restore_progress_bar(meta.size_bytes);
-    download_pb.set_message("Downloading from server...");
     let encrypted = client
         .restore_project(&meta.uuid)
         .map_err(|e| format!("Restore failed: {}", e))?;
-    download_pb.finish_and_clear();
 
-    // Decrypt and extract with progress
-    let extract_pb = progress::restore_progress_bar(encrypted.len() as u64);
-    extract_pb.set_message("Decrypting and extracting...");
+    // Decrypt and extract
+    println!("Decrypting and extracting...");
     let identity = pwr_core::crypto::load_age_identity()
         .map_err(|e| format!("Cannot load age identity: {}", e))?;
 
     let hash = pwr_core::crypto::sha256_hex(&encrypted);
     pwr_core::archive::extract_archive(&encrypted, &identity, &abs_path, &hash)
         .map_err(|e| format!("Extraction failed: {}", e))?;
-    extract_pb.finish_and_clear();
 
     // Update metadata
     let mut updated = meta.clone();
@@ -401,7 +348,7 @@ fn cmd_restore(path: PathBuf, dry_run: bool, use_tls: bool) -> Result<(), String
     Ok(())
 }
 
-fn cmd_ensure(path: PathBuf, quiet: bool, _use_tls: bool) -> Result<(), String> {
+fn cmd_ensure(path: PathBuf, quiet: bool) -> Result<(), String> {
     use pwr_core::project;
 
     let abs_path = if path.is_absolute() {
@@ -420,13 +367,13 @@ fn cmd_ensure(path: PathBuf, quiet: bool, _use_tls: bool) -> Result<(), String> 
         if !quiet {
             println!("Project archived. Restoring...");
         }
-        return cmd_restore(abs_path, false, false);
+        return cmd_restore(abs_path, false);
     }
 
     Err(format!("No such project: {}", path.display()))
 }
 
-fn cmd_status(recursive: bool, _use_tls: bool) -> Result<(), String> {
+fn cmd_status(recursive: bool) -> Result<(), String> {
     use pwr_core::config::load_config;
     use pwr_core::project;
 
@@ -472,13 +419,11 @@ fn cmd_status(recursive: bool, _use_tls: bool) -> Result<(), String> {
         local, archived, projects.len()
     );
 
-    println!("Server: {}:{}", config.server_host, config.server_port);
-
     Ok(())
 }
 
-fn cmd_list(recursive: bool, _use_tls: bool) -> Result<(), String> {
-    cmd_status(recursive, false) // Delegate with TLS off for local-only
+fn cmd_list(recursive: bool) -> Result<(), String> {
+    cmd_status(recursive) // Same output format
 }
 
 fn cmd_shell(shell: &str) -> Result<(), String> {
@@ -492,7 +437,7 @@ fn cmd_shell(shell: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_shell_init(shell: &str, auto_install: bool) -> Result<(), String> {
+fn cmd_shell_init(shell: &str) -> Result<(), String> {
     let home = std::env::var("HOME").unwrap_or_default();
     let rc_file = match shell {
         "bash" => format!("{}/.bashrc", home),
@@ -500,26 +445,12 @@ fn cmd_shell_init(shell: &str, auto_install: bool) -> Result<(), String> {
         "fish" => format!("{}/.config/fish/config.fish", home),
         _ => return Err(format!("Unsupported shell: {}", shell)),
     };
-
-    let eval_line = format!("\n# pwr — lazy project archiver\neval \"$(pwr shell {})\"\n", shell);
-
-    if auto_install {
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&rc_file)
-            .map_err(|e| format!("Cannot open {}: {}", rc_file, e))?;
-        f.write_all(eval_line.as_bytes())
-            .map_err(|e| format!("Cannot write to {}: {}", rc_file, e))?;
-        println!("Shell integration installed to {}", rc_file);
-    } else {
-        println!("Add this to {}:\n{}", rc_file, eval_line);
-    }
+    println!("Add this to {}:\n", rc_file);
+    println!("eval \"$(pwr shell {})\"", shell);
     Ok(())
 }
 
-fn cmd_log(project: Option<String>, show_errors: bool, limit: usize) -> Result<(), String> {
+fn cmd_log(project: Option<String>, show_errors: bool) -> Result<(), String> {
     use pwr_core::transaction;
 
     let transactions = transaction::read_transactions()
@@ -536,8 +467,7 @@ fn cmd_log(project: Option<String>, show_errors: bool, limit: usize) -> Result<(
         return Ok(());
     }
 
-    let count = filtered.len().min(limit);
-    for tx in filtered.iter().take(limit) {
+    for tx in &filtered {
         let status = match tx.status {
             pwr_core::transaction::TransactionStatus::Completed => "OK",
             pwr_core::transaction::TransactionStatus::Failed => "FAILED",
@@ -556,10 +486,6 @@ fn cmd_log(project: Option<String>, show_errors: bool, limit: usize) -> Result<(
                 println!("  Error: {}", err);
             }
         }
-    }
-
-    if filtered.len() > limit {
-        println!("(showing {} of {} entries)", limit, filtered.len());
     }
 
     Ok(())
