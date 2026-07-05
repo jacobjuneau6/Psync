@@ -21,6 +21,31 @@ use flate2::Compression;
 
 use crate::error::{PwrError, Result};
 
+/// Progress stage reported during archive or extract operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArchiveStage {
+    /// Scanning the project directory tree.
+    Scanning,
+    /// Building the tar archive.
+    Tarring,
+    /// Compressing with gzip.
+    Compressing,
+    /// Encrypting with age.
+    Encrypting,
+    /// Computing the SHA-256 hash.
+    Hashing,
+    /// Decrypting with age.
+    Decrypting,
+    /// Decompressing with gunzip.
+    Decompressing,
+    /// Extracting files from the tar archive.
+    Extracting,
+}
+
+/// Callback type for progress reporting during archive/extract operations.
+/// Receives the current stage and a progress fraction from 0.0 to 1.0.
+pub type ProgressFn = Box<dyn Fn(ArchiveStage, f64)>;
+
 /// Create a tar.gz archive of a project directory, encrypt it with
 /// the given age public key, and return the encrypted blob along with
 /// its SHA-256 hash.
@@ -29,23 +54,44 @@ use crate::error::{PwrError, Result};
 /// proportional to the project size. Symlinks are archived as symlinks.
 /// The `.project.toml` metadata file is excluded from the archive since
 /// it's maintained separately on the client side.
+///
+/// If a progress callback is provided, it is called at each stage
+/// transition with a fractional progress indicator.
 pub fn create_archive(
     project_dir: &Path,
     public_key: &str,
 ) -> Result<(Vec<u8>, String)> {
+    create_archive_with_progress(project_dir, public_key, None)
+}
+
+/// Create an archive with an optional progress callback.
+pub fn create_archive_with_progress(
+    project_dir: &Path,
+    public_key: &str,
+    progress: Option<&ProgressFn>,
+) -> Result<(Vec<u8>, String)> {
+    if let Some(cb) = progress {
+        cb(ArchiveStage::Scanning, 0.0);
+    }
     // Step 1: tar + gzip → temp file
     let tmp_dir = std::env::temp_dir().join(format!("pwr-archive-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&tmp_dir)?;
     let tar_gz_path = tmp_dir.join("archive.tar.gz");
 
+    if let Some(cb) = progress {
+        cb(ArchiveStage::Tarring, 0.1);
+    }
+
     let tar_gz_file = File::create(&tar_gz_path)?;
     let encoder = GzEncoder::new(tar_gz_file, Compression::default());
     let mut tar_builder = tar::Builder::new(encoder);
 
-    // Walk the project directory, adding files to the tarball
     add_dir_to_tar(&mut tar_builder, project_dir, project_dir)?;
 
-    // Finish the tar and gzip streams
+    if let Some(cb) = progress {
+        cb(ArchiveStage::Compressing, 0.3);
+    }
+
     let encoder = tar_builder
         .into_inner()
         .map_err(|e| PwrError::Crypto(format!("tar finalize error: {}", e)))?;
@@ -56,10 +102,22 @@ pub fn create_archive(
     // Step 2: Read the tar.gz and age-encrypt
     let tar_gz_data = fs::read(&tar_gz_path)?;
 
+    if let Some(cb) = progress {
+        cb(ArchiveStage::Encrypting, 0.5);
+    }
+
     let encrypted = crate::crypto::age_encrypt(&tar_gz_data, public_key)?;
 
     // Step 3: Compute SHA-256 hash of the encrypted blob
+    if let Some(cb) = progress {
+        cb(ArchiveStage::Hashing, 0.9);
+    }
+
     let hash = crate::crypto::sha256_hex(&encrypted);
+
+    if let Some(cb) = progress {
+        cb(ArchiveStage::Hashing, 1.0);
+    }
 
     // Clean up temp directory
     let _ = fs::remove_dir_all(&tmp_dir);
@@ -129,7 +187,22 @@ pub fn extract_archive(
     target_dir: &Path,
     expected_hash: &str,
 ) -> Result<()> {
+    extract_archive_with_progress(encrypted_blob, identity, target_dir, expected_hash, None)
+}
+
+/// Extract an archive with an optional progress callback.
+pub fn extract_archive_with_progress(
+    encrypted_blob: &[u8],
+    identity: &age::x25519::Identity,
+    target_dir: &Path,
+    expected_hash: &str,
+    progress: Option<&ProgressFn>,
+) -> Result<()> {
     // Step 1: Verify hash
+    if let Some(cb) = progress {
+        cb(ArchiveStage::Hashing, 0.0);
+    }
+
     let actual_hash = crate::crypto::sha256_hex(encrypted_blob);
     if actual_hash != expected_hash {
         return Err(PwrError::Crypto(format!(
@@ -138,18 +211,42 @@ pub fn extract_archive(
         )));
     }
 
+    if let Some(cb) = progress {
+        cb(ArchiveStage::Hashing, 0.2);
+    }
+
     // Step 2: Decrypt
+    if let Some(cb) = progress {
+        cb(ArchiveStage::Decrypting, 0.3);
+    }
+
     let decrypted = crate::crypto::age_decrypt(encrypted_blob, identity)?;
 
+    if let Some(cb) = progress {
+        cb(ArchiveStage::Decrypting, 0.5);
+    }
+
     // Step 3: Gunzip
+    if let Some(cb) = progress {
+        cb(ArchiveStage::Decompressing, 0.6);
+    }
+
     let gz_reader = GzDecoder::new(&decrypted[..]);
 
     // Step 4: Untar
+    if let Some(cb) = progress {
+        cb(ArchiveStage::Extracting, 0.7);
+    }
+
     fs::create_dir_all(target_dir)?;
     let mut archive = tar::Archive::new(gz_reader);
     archive
         .unpack(target_dir)
         .map_err(|e| PwrError::Crypto(format!("untar error: {}", e)))?;
+
+    if let Some(cb) = progress {
+        cb(ArchiveStage::Extracting, 1.0);
+    }
 
     Ok(())
 }
