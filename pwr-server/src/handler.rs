@@ -260,15 +260,15 @@ fn handle_archive_finish(
     complete: &ArchiveComplete,
     ctx: &HandlerContext,
 ) -> Result<(), String> {
-    let session = match state {
-        ConnState::Archiving(s) => s,
+    // Extract session data before modifying state (avoids borrow conflict)
+    let (project_uuid, project_name, _total_size) = match state {
+        ConnState::Archiving(s) => (s.project_uuid, s.project_name.clone(), s.total_size),
         _ => return Err("Not in archiving state".into()),
     };
 
     if !complete.success {
-        let _ = ctx.storage.write().unwrap().remove_project(&session.project_uuid);
+        let _ = ctx.storage.write().unwrap().remove_project(&project_uuid);
         *state = ConnState::Authenticated;
-        // Send the ArchiveComplete back as acknowledgment
         send_server_msg(stream, &protocol::build_error(0, "Archive cancelled by client"))?;
         return Ok(());
     }
@@ -276,7 +276,7 @@ fn handle_archive_finish(
     // Update project with final size
     {
         let mut storage = ctx.storage.write().unwrap();
-        if let Some(mut project) = storage.get_project(&session.project_uuid).cloned() {
+        if let Some(mut project) = storage.get_project(&project_uuid).cloned() {
             project.size_bytes = complete.total_size;
             project.updated_at = chrono::Utc::now();
             storage.update_project(project)
@@ -287,7 +287,7 @@ fn handle_archive_finish(
     *state = ConnState::Authenticated;
     log::info!(
         "Archive complete: {} ({} bytes, hash: {})",
-        session.project_name, complete.total_size,
+        project_name, complete.total_size,
         &complete.archive_hash[..16.min(complete.archive_hash.len())]
     );
     Ok(())

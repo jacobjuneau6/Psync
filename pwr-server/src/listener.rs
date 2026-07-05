@@ -81,19 +81,14 @@ pub fn run(config: ServerConfig) -> Result<(), String> {
             log::debug!("Connection from {}", peer_addr);
 
             // Perform TLS handshake
-            let mut tls_stream = match rustls::ServerConnection::new(tls_config) {
-                Ok(conn) => match rustls::StreamOwned::new(conn, stream) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::warn!("TLS handshake failed from {}: {}", peer_addr, e);
-                        return;
-                    }
-                },
+            let conn = match rustls::ServerConnection::new(tls_config.clone()) {
+                Ok(c) => c,
                 Err(e) => {
                     log::error!("Cannot create TLS connection: {}", e);
                     return;
                 }
             };
+            let mut tls_stream = rustls::StreamOwned::new(conn, stream);
 
             let ctx = HandlerContext {
                 storage: storage.clone(),
