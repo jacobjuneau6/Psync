@@ -262,14 +262,28 @@ fn cmd_archive(path: PathBuf, dry_run: bool) -> Result<(), String> {
         &hash[..16]
     );
 
-    // Connect to server and upload
+    // Connect to server and upload with progress bar
     println!("Connecting to {}...", config.server_addr());
     let mut client = client::PwrClient::connect(&config, false)
         .map_err(|e| format!("Connection failed: {}", e))?;
 
+    let total = encrypted.len() as u64;
+    let pb = indicatif::ProgressBar::new(total);
+    pb.set_style(
+        indicatif::ProgressStyle::default_bar()
+            .template("Uploading {spinner:.green} [{bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let pb_ref = &pb;
     client
-        .archive_project(&meta.uuid, project_name, &encrypted, &hash)
+        .archive_project_with_progress(
+            &meta.uuid, project_name, &encrypted, &hash,
+            Some(&|sent, _total| { pb_ref.set_position(sent); }),
+        )
         .map_err(|e| format!("Archive failed: {}", e))?;
+    pb.finish_and_clear();
 
     // Update local metadata and clean up
     let file_count = project::file_count(&abs_path).map_err(|e| format!("{}", e))?;
@@ -319,13 +333,26 @@ fn cmd_restore(path: PathBuf, dry_run: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    // Connect and download
+    // Connect and download with progress bar
     let mut client = client::PwrClient::connect(&config, false)
         .map_err(|e| format!("Connection failed: {}", e))?;
 
+    let pb = indicatif::ProgressBar::new(meta.size_bytes);
+    pb.set_style(
+        indicatif::ProgressStyle::default_bar()
+            .template("Downloading {spinner:.green} [{bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let pb_ref = &pb;
     let encrypted = client
-        .restore_project(&meta.uuid)
+        .restore_project_with_progress(
+            &meta.uuid,
+            Some(&|received, _total| { pb_ref.set_position(received); }),
+        )
         .map_err(|e| format!("Restore failed: {}", e))?;
+    pb.finish_and_clear();
 
     // Decrypt and extract
     println!("Decrypting and extracting...");

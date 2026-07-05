@@ -7,6 +7,10 @@ repository.workspace = true
 authors.workspace = true
 description = "pwr: Lazy project archiver — client CLI and TUI for the pwr-server daemon"
 
+[lib]
+name = "pwr"
+path = "src/lib.rs"
+
 [[bin]]
 name = "pwr"
 path = "src/main.rs"
