@@ -1,12 +1,35 @@
 //! Wire protocol message types shared between client and server.
 //!
-//! All control messages are serialized with bincode for compact,
-//! efficient encoding. File data is streamed as raw bytes outside
-//! the message framing layer (see `frame.rs`).
+//! Control messages are serialized as JSON in framed envelopes (see `frame.rs`).
+//! File data is streamed as raw bytes outside the framing layer.
+//!
+//! ## Message flow
+//!
+//! ```text
+//! Client                                 Server
+//!   |                                      |
+//!   |--- Handshake ----------------------->|
+//!   |<-- HandshakeAck ---------------------|
+//!   |                                      |
+//!   |--- ArchiveRequest ------------------>|
+//!   |<-- ArchiveAccept --------------------|
+//!   |--- [FileHeader + raw chunks]* ------>|
+//!   |--- ArchiveComplete ----------------->|
+//!   |                                      |
+//!   |--- RestoreRequest ------------------>|
+//!   |<-- RestoreAccept --------------------|
+//!   |<-- [FileHeader + raw chunks]* -------|
+//!   |<-- RestoreComplete ------------------|
+//!   |                                      |
+//!   |--- StatusRequest ------------------->|
+//!   |<-- StatusResponse -------------------|
+//! ```
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::error::{PwrError, Result};
 
 /// Protocol version constant. Both client and server must agree on this.
 pub const PROTOCOL_VERSION: u8 = 0x01;
@@ -14,9 +37,9 @@ pub const PROTOCOL_VERSION: u8 = 0x01;
 /// Default chunk size for file streaming: 1 MiB.
 pub const CHUNK_SIZE: usize = 1024 * 1024;
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // Message type identifiers
-// ---------------------------------------------------------------------------
+// =========================================================================
 
 /// Identifies the type of a protocol message in the frame header.
 ///
@@ -73,9 +96,66 @@ impl MessageType {
     }
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
+// Unified message enums — each variant wraps the corresponding payload struct
+// =========================================================================
+
+/// All messages a client can send to the server.
+///
+/// Serialization is delegated to the inner struct; this enum exists
+/// for type-safe dispatch in the handler state machine.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClientMessage {
+    Handshake(Handshake),
+    ArchiveRequest(ArchiveRequest),
+    ArchiveComplete(ArchiveComplete),
+    RestoreRequest(RestoreRequest),
+    StatusRequest(StatusRequest),
+}
+
+impl ClientMessage {
+    /// Return the MessageType discriminant for this variant.
+    pub fn message_type(&self) -> MessageType {
+        match self {
+            Self::Handshake(_) => MessageType::Handshake,
+            Self::ArchiveRequest(_) => MessageType::ArchiveRequest,
+            Self::ArchiveComplete(_) => MessageType::ArchiveComplete,
+            Self::RestoreRequest(_) => MessageType::RestoreRequest,
+            Self::StatusRequest(_) => MessageType::StatusRequest,
+        }
+    }
+}
+
+/// All messages a server can send to the client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ServerMessage {
+    HandshakeAck(HandshakeAck),
+    ArchiveAccept(ArchiveAccept),
+    RestoreAccept(RestoreAccept),
+    RestoreComplete(RestoreComplete),
+    StatusResponse(StatusResponse),
+    Error(ErrorMessage),
+}
+
+impl ServerMessage {
+    /// Return the MessageType discriminant for this variant.
+    pub fn message_type(&self) -> MessageType {
+        match self {
+            Self::HandshakeAck(_) => MessageType::HandshakeAck,
+            Self::ArchiveAccept(_) => MessageType::ArchiveAccept,
+            Self::RestoreAccept(_) => MessageType::RestoreAccept,
+            Self::RestoreComplete(_) => MessageType::RestoreComplete,
+            Self::StatusResponse(_) => MessageType::StatusResponse,
+            Self::Error(_) => MessageType::Error,
+        }
+    }
+}
+
+// =========================================================================
 // Handshake messages
-// ---------------------------------------------------------------------------
+// =========================================================================
 
 /// Sent by the client immediately after the TLS handshake completes.
 ///
@@ -112,9 +192,9 @@ pub struct HandshakeAck {
     pub reason: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Archive flow messages
-// ---------------------------------------------------------------------------
+// =========================================================================
+// Archive flow messages (client → server direction, server acks)
+// =========================================================================
 
 /// Client requests permission to upload a project archive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,9 +203,9 @@ pub struct ArchiveRequest {
     pub project_uuid: Uuid,
     /// Human-readable project name.
     pub project_name: String,
-    /// Total uncompressed size in bytes (for progress estimation).
+    /// Total size of the encrypted archive in bytes.
     pub total_size: u64,
-    /// Number of files being sent (for progress granularity).
+    /// Number of files in the project (for progress granularity).
     pub file_count: u32,
     /// Whether the archive is compressed.
     pub compression: bool,
@@ -134,7 +214,7 @@ pub struct ArchiveRequest {
 /// Server accepts the archive request and assigns a session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchiveAccept {
-    /// Session identifier for correlating subsequent chunks.
+    /// Session identifier for correlating subsequent file chunks.
     pub session_id: Uuid,
 }
 
@@ -145,50 +225,51 @@ pub struct ArchiveComplete {
     pub success: bool,
     /// Total bytes received by the server.
     pub total_size: u64,
-    /// SHA-256 hash of the entire encrypted archive (hex-encoded).
+    /// SHA-256 hash of the encrypted archive (hex-encoded).
     pub archive_hash: String,
     /// Error description if success is false.
     #[serde(default)]
     pub error: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Restore flow messages
-// ---------------------------------------------------------------------------
+// =========================================================================
+// Restore flow messages (client requests, server streams back)
+// =========================================================================
 
-/// Client requests a project archive be sent back.
+/// Client requests a project archive be sent back for restore.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoreRequest {
     /// UUID of the project to restore.
     pub project_uuid: Uuid,
 }
 
-/// Server accepts the restore request and provides size information.
+/// Server accepts the restore request and provides metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoreAccept {
-    /// Session identifier for correlating subsequent chunks.
+    /// Session identifier for correlating subsequent file chunks.
     pub session_id: Uuid,
-    /// Total size of the archive in bytes.
+    /// Total size of the encrypted archive in bytes.
     pub total_size: u64,
     /// Number of files in the archive.
     pub file_count: u32,
-    /// SHA-256 hash of the archive (hex-encoded) for client verification.
+    /// SHA-256 hash of the archive (hex-encoded) for client-side
+    /// integrity verification after download.
     pub archive_hash: String,
 }
 
 /// Server reports the restore transfer is complete.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoreComplete {
-    /// Whether the server considers the transfer complete.
+    /// Whether the server considers the transfer successful.
     pub success: bool,
     /// Error description if success is false.
     #[serde(default)]
     pub error: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// File streaming messages
-// ---------------------------------------------------------------------------
+// =========================================================================
+// File streaming messages (used by both archive and restore)
+// =========================================================================
 
 /// Metadata for a single file within a project archive.
 ///
@@ -215,11 +296,12 @@ pub struct FileEnd {
     pub checksum: String,
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // Query messages
-// ---------------------------------------------------------------------------
+// =========================================================================
 
-/// Request the list of all projects stored on the server.
+/// Request project information from the server.
+/// An empty request returns all projects; provide a UUID to query one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusRequest {
     /// If set, only return information for this project.
@@ -227,7 +309,7 @@ pub struct StatusRequest {
     pub project_uuid: Option<Uuid>,
 }
 
-/// Server response with project information.
+/// Server response with matching project information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusResponse {
     /// List of projects matching the request.
@@ -251,22 +333,102 @@ pub struct ProjectInfo {
     pub last_modified: DateTime<Utc>,
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // Error message
-// ---------------------------------------------------------------------------
+// =========================================================================
 
-/// Generic error response sent by either party.
+/// Generic error response sent by either party on protocol violations,
+/// authentication failures, or storage errors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorMessage {
-    /// Numeric error code for programmatic handling.
+    /// Numeric error code for programmatic handling:
+    /// 1 = authentication failed, 2 = framing error, 3 = not found,
+    /// 4 = storage full, 5 = protocol violation.
     pub code: u32,
     /// Human-readable error description.
     pub message: String,
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
+// Deserialization helpers
+// =========================================================================
+
+/// Deserialize a client message from raw frame payload bytes.
+pub fn decode_client_message(msg_type: MessageType, payload: &[u8]) -> Result<ClientMessage> {
+    match msg_type {
+        MessageType::Handshake => {
+            let m: Handshake = serde_json::from_slice(payload)
+                .map_err(|e| PwrError::Framing(format!("bad Handshake: {}", e)))?;
+            Ok(ClientMessage::Handshake(m))
+        }
+        MessageType::ArchiveRequest => {
+            let m: ArchiveRequest = serde_json::from_slice(payload)
+                .map_err(|e| PwrError::Framing(format!("bad ArchiveRequest: {}", e)))?;
+            Ok(ClientMessage::ArchiveRequest(m))
+        }
+        MessageType::ArchiveComplete => {
+            let m: ArchiveComplete = serde_json::from_slice(payload)
+                .map_err(|e| PwrError::Framing(format!("bad ArchiveComplete: {}", e)))?;
+            Ok(ClientMessage::ArchiveComplete(m))
+        }
+        MessageType::RestoreRequest => {
+            let m: RestoreRequest = serde_json::from_slice(payload)
+                .map_err(|e| PwrError::Framing(format!("bad RestoreRequest: {}", e)))?;
+            Ok(ClientMessage::RestoreRequest(m))
+        }
+        MessageType::StatusRequest => {
+            let m: StatusRequest = serde_json::from_slice(payload)
+                .map_err(|e| PwrError::Framing(format!("bad StatusRequest: {}", e)))?;
+            Ok(ClientMessage::StatusRequest(m))
+        }
+        other => Err(PwrError::Protocol(format!(
+            "Expected client message, got server message type {:?}", other
+        ))),
+    }
+}
+
+/// Deserialize a server message from raw frame payload bytes.
+pub fn decode_server_message(msg_type: MessageType, payload: &[u8]) -> Result<ServerMessage> {
+    match msg_type {
+        MessageType::HandshakeAck => {
+            let m: HandshakeAck = serde_json::from_slice(payload)
+                .map_err(|e| PwrError::Framing(format!("bad HandshakeAck: {}", e)))?;
+            Ok(ServerMessage::HandshakeAck(m))
+        }
+        MessageType::ArchiveAccept => {
+            let m: ArchiveAccept = serde_json::from_slice(payload)
+                .map_err(|e| PwrError::Framing(format!("bad ArchiveAccept: {}", e)))?;
+            Ok(ServerMessage::ArchiveAccept(m))
+        }
+        MessageType::RestoreAccept => {
+            let m: RestoreAccept = serde_json::from_slice(payload)
+                .map_err(|e| PwrError::Framing(format!("bad RestoreAccept: {}", e)))?;
+            Ok(ServerMessage::RestoreAccept(m))
+        }
+        MessageType::RestoreComplete => {
+            let m: RestoreComplete = serde_json::from_slice(payload)
+                .map_err(|e| PwrError::Framing(format!("bad RestoreComplete: {}", e)))?;
+            Ok(ServerMessage::RestoreComplete(m))
+        }
+        MessageType::StatusResponse => {
+            let m: StatusResponse = serde_json::from_slice(payload)
+                .map_err(|e| PwrError::Framing(format!("bad StatusResponse: {}", e)))?;
+            Ok(ServerMessage::StatusResponse(m))
+        }
+        MessageType::Error => {
+            let m: ErrorMessage = serde_json::from_slice(payload)
+                .map_err(|e| PwrError::Framing(format!("bad ErrorMessage: {}", e)))?;
+            Ok(ServerMessage::Error(m))
+        }
+        other => Err(PwrError::Protocol(format!(
+            "Expected server message, got client message type {:?}", other
+        ))),
+    }
+}
+
+// =========================================================================
 // Tests
-// ---------------------------------------------------------------------------
+// =========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -322,17 +484,62 @@ mod tests {
     }
 
     #[test]
-    fn test_handshake_message_sizes() {
-        let h = Handshake {
-            version: 1,
-            client_id: "laptop".into(),
-            nonce: [0xAA; 32],
-            proof: [0xBB; 32],
-        };
+    fn test_client_message_round_trip() {
+        let msg = ClientMessage::ArchiveRequest(ArchiveRequest {
+            project_uuid: Uuid::new_v4(),
+            project_name: "roundtrip".into(),
+            total_size: 5000,
+            file_count: 10,
+            compression: false,
+        });
 
-        let encoded = serde_json::to_vec(&h).unwrap();
-        // Handshake should be reasonably small
-        assert!(!encoded.is_empty());
+        let encoded = serde_json::to_vec(&msg).unwrap();
+        let decoded: ClientMessage = serde_json::from_slice(&encoded).unwrap();
+
+        match decoded {
+            ClientMessage::ArchiveRequest(req) => {
+                assert_eq!(req.project_name, "roundtrip");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_round_trip() {
+        let msg = ServerMessage::Error(ErrorMessage {
+            code: 3,
+            message: "project not found".into(),
+        });
+
+        let encoded = serde_json::to_vec(&msg).unwrap();
+        let decoded: ServerMessage = serde_json::from_slice(&encoded).unwrap();
+
+        match decoded {
+            ServerMessage::Error(e) => {
+                assert_eq!(e.code, 3);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_decode_client_message_wrong_type() {
+        // Passing a server message type should error
+        let payload = serde_json::to_vec(&ErrorMessage { code: 1, message: "err".into() }).unwrap();
+        let result = decode_client_message(MessageType::Error, &payload);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_server_message_wrong_type() {
+        let payload = serde_json::to_vec(&Handshake {
+            version: 1,
+            client_id: "x".into(),
+            nonce: [0; 32],
+            proof: [0; 32],
+        }).unwrap();
+        let result = decode_server_message(MessageType::Handshake, &payload);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -351,5 +558,34 @@ mod tests {
 
         assert_eq!(decoded.name, "test");
         assert_eq!(decoded.size_bytes, 1000);
+    }
+
+    #[test]
+    fn test_client_message_type_mapping() {
+        let msg = ClientMessage::Handshake(Handshake {
+            version: 1,
+            client_id: "test".into(),
+            nonce: [0; 32],
+            proof: [0; 32],
+        });
+        assert_eq!(msg.message_type(), MessageType::Handshake);
+
+        let msg = ClientMessage::StatusRequest(StatusRequest { project_uuid: None });
+        assert_eq!(msg.message_type(), MessageType::StatusRequest);
+    }
+
+    #[test]
+    fn test_server_message_type_mapping() {
+        let msg = ServerMessage::HandshakeAck(HandshakeAck {
+            success: true,
+            server_version: "0.1.0".into(),
+            server_nonce: [0; 32],
+            server_proof: [0; 32],
+            reason: None,
+        });
+        assert_eq!(msg.message_type(), MessageType::HandshakeAck);
+
+        let msg = ServerMessage::Error(ErrorMessage { code: 1, message: "oops".into() });
+        assert_eq!(msg.message_type(), MessageType::Error);
     }
 }
