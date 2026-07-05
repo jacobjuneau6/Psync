@@ -427,6 +427,137 @@ pub fn decode_server_message(msg_type: MessageType, payload: &[u8]) -> Result<Se
 }
 
 // =========================================================================
+// Archive flow helpers
+// =========================================================================
+
+/// Build an ArchiveRequest message for the given project metadata.
+pub fn build_archive_request(
+    uuid: Uuid,
+    name: &str,
+    total_size: u64,
+    file_count: u32,
+    compression: bool,
+) -> ClientMessage {
+    ClientMessage::ArchiveRequest(ArchiveRequest {
+        project_uuid: uuid,
+        project_name: name.to_string(),
+        total_size,
+        file_count,
+        compression,
+    })
+}
+
+/// Build a successful ArchiveComplete message.
+pub fn build_archive_complete(total_size: u64, archive_hash: &str) -> ClientMessage {
+    ClientMessage::ArchiveComplete(ArchiveComplete {
+        success: true,
+        total_size,
+        archive_hash: archive_hash.to_string(),
+        error: None,
+    })
+}
+
+/// Build a failed ArchiveComplete message.
+pub fn build_archive_failed(error: &str) -> ClientMessage {
+    ClientMessage::ArchiveComplete(ArchiveComplete {
+        success: false,
+        total_size: 0,
+        archive_hash: String::new(),
+        error: Some(error.to_string()),
+    })
+}
+
+// =========================================================================
+// Restore flow helpers
+// =========================================================================
+
+/// Build a RestoreRequest for a project UUID.
+pub fn build_restore_request(uuid: Uuid) -> ClientMessage {
+    ClientMessage::RestoreRequest(RestoreRequest {
+        project_uuid: uuid,
+    })
+}
+
+/// Build a RestoreAccept server response with session and metadata.
+pub fn build_restore_accept(
+    session_id: Uuid,
+    total_size: u64,
+    file_count: u32,
+    archive_hash: &str,
+) -> ServerMessage {
+    ServerMessage::RestoreAccept(RestoreAccept {
+        session_id,
+        total_size,
+        file_count,
+        archive_hash: archive_hash.to_string(),
+    })
+}
+
+/// Build a successful RestoreComplete message.
+pub fn build_restore_complete() -> ServerMessage {
+    ServerMessage::RestoreComplete(RestoreComplete {
+        success: true,
+        error: None,
+    })
+}
+
+/// Build a failed RestoreComplete message.
+pub fn build_restore_failed(error: &str) -> ServerMessage {
+    ServerMessage::RestoreComplete(RestoreComplete {
+        success: false,
+        error: Some(error.to_string()),
+    })
+}
+
+// =========================================================================
+// Error helpers
+// =========================================================================
+
+/// Build an Error server message.
+pub fn build_error(code: u32, message: &str) -> ServerMessage {
+    ServerMessage::Error(ErrorMessage {
+        code,
+        message: message.to_string(),
+    })
+}
+
+/// Build an ArchiveAccept server message.
+pub fn build_archive_accept(session_id: Uuid) -> ServerMessage {
+    ServerMessage::ArchiveAccept(ArchiveAccept { session_id })
+}
+
+/// Build a HandshakeAck for successful authentication.
+pub fn build_handshake_ack_success(
+    server_version: &str,
+    server_nonce: [u8; 32],
+    server_proof: [u8; 32],
+) -> ServerMessage {
+    ServerMessage::HandshakeAck(HandshakeAck {
+        success: true,
+        server_version: server_version.to_string(),
+        server_nonce,
+        server_proof,
+        reason: None,
+    })
+}
+
+/// Build a HandshakeAck for failed authentication.
+pub fn build_handshake_ack_failed(reason: &str) -> ServerMessage {
+    ServerMessage::HandshakeAck(HandshakeAck {
+        success: false,
+        server_version: String::new(),
+        server_nonce: [0u8; 32],
+        server_proof: [0u8; 32],
+        reason: Some(reason.to_string()),
+    })
+}
+
+/// Build a StatusResponse with project listings.
+pub fn build_status_response(projects: Vec<ProjectInfo>) -> ServerMessage {
+    ServerMessage::StatusResponse(StatusResponse { projects })
+}
+
+// =========================================================================
 // Tests
 // =========================================================================
 
