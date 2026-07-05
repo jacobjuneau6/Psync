@@ -1,138 +1,152 @@
 # Psync — Lazy Project Archiver (`pwr`)
 
-A Rust tool that archives projects from your laptop to a NAS and restores
-them on demand via `cd`. Uses rsync for reliable, resumable file transfers.
-
-## How it works
-
-1. **Track** a project with `pwr archive <path>` — it uploads to the NAS and
-   replaces the local directory with a lightweight `.project.toml` placeholder.
-2. **Restore** with `pwr restore <path>` or just `cd` into the directory if
-   shell integration is enabled.
-3. **Status** with `pwr status` shows all tracked projects and their state.
-4. **Log** with `pwr log` to see the transaction history.
+A Rust tool that archives projects from a laptop to a NAS and restores
+them on demand. Uses a custom TLS-encrypted protocol instead of rsync,
+with client-side age encryption so the server never sees plaintext data.
 
 ## Architecture
 
 ```
-pwr-core/     — Library: metadata types, config, .project.toml read/write,
-                transaction logging, project discovery
-pwr-cli/      — Binary: CLI (clap), rsync wrapper with progress bars,
-                shell integration (bash/zsh/fish), colored terminal output
+pwr-core/       — Shared library: metadata, protocol, crypto, archive pipeline
+pwr-server/     — NAS daemon: TLS listener, auth, project storage
+pwr-cli/        — Client binary: CLI commands, TUI, shell integration
 ```
 
-## Quick start
+```
+┌─────────────────┐         ┌──────────────────────┐
+│     Laptop       │  TLS    │     NAS (Debian 12)   │
+│                  │◄───────►│                      │
+│  pwr (CLI+TUI)  │  :9742  │  pwr-server (daemon) │
+└─────────────────┘         └──────────────────────┘
+```
+
+## Security
+
+- **Transport**: TLS 1.3 with certificate pinning
+- **Authentication**: PSK-based HMAC-SHA256 challenge-response
+- **At-rest**: age (X25519) client-side encryption — server stores only ciphertext
+- **Integrity**: SHA-256 hash verification on every transfer
+
+## Quick Start
+
+### Server (NAS — Debian 12)
+
+```bash
+# Build
+cargo build --release -p pwr-server
+
+# Initialize (generates TLS cert, PSK)
+./target/release/pwr-server init
+
+# Start the daemon
+./target/release/pwr-server start
+```
+
+### Client (Laptop — Arch Linux)
 
 ```bash
 # Build
 cargo build --release
 
-# Configure (one-time)
-pwr init \
-  --nas-host mynas \
-  --nas-user jacob \
-  --nas-base-path /srv/projects \
-  --local-root ~/Projects
+# Configure (use the PSK printed by server init)
+pwr init --server-host nas.local --psk <hex-key>
+
+# Set up shell integration
+eval "$(pwr shell bash)"
 
 # Archive a project
 pwr archive ~/Projects/old-project
 
-# Restore it explicitly
-pwr restore ~/Projects/old-project
-
-# Or: set up shell integration so `cd` restores automatically
-eval "$(pwr shell bash)"
+# Restore — just cd into it
 cd ~/Projects/old-project   # auto-restores!
 
-# See what's tracked
+# Or explicitly
+pwr restore ~/Projects/old-project
+
+# See status
 pwr status
-pwr status --recursive
 
-# List all tracked projects
-pwr list
-
-# View transaction history
-pwr log
-pwr log --errors             # show failed transaction details
-pwr log old-project          # filter by project name
+# Launch TUI
+pwr tui
 ```
+
+## Project File Format
+
+Each tracked project has a `.project.toml` in its directory:
+
+```toml
+version = 1
+uuid = "550e8400-e29b-41d4-a716-446655440000"
+name = "myproject"
+local_path = "/home/jacob/Projects/myproject"
+remote_path = "nas.local:9742:/srv/pwr/projects/myproject"
+size_bytes = 14531252221
+file_count = 342
+last_sync = "2026-07-04T18:23:12Z"
+state = "archived"
+encryption_enabled = true
+public_key = "age1qx0..."
+```
+
+After archiving, the directory contains only `.project.toml` — the
+placeholder that triggers automatic restore when you `cd` into it.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `pwr init` | Set up config (`~/.config/pwr/config.toml`) |
-| `pwr archive <path>` | Upload project to NAS, leave placeholder |
-| `pwr restore <path>` | Download project from NAS |
-| `pwr ensure <path>` | Ensure project is local (for shell wrapper) |
-| `pwr status` | Show all tracked projects with state |
-| `pwr list` | List all tracked projects with paths |
-| `pwr log` | View transaction history |
-| `pwr shell <shell>` | Generate shell integration (bash/zsh/fish) |
-
-## Project file format (`.project.toml`)
-
-```toml
-version = 1
-uuid = "0d1cb5b7-1234-4abc-9def-0123456789ab"
-name = "myproject"
-local_path = "/home/jacob/Projects/myproject"
-remote_path = "nas:/srv/projects/myproject"
-size_bytes = 14531252221
-last_sync = "2026-07-04T18:23:12Z"
-compression = false
-state = "archived"
-```
-
-After archiving, the directory still exists but contains only `.project.toml`,
-so editors, bookmarks, and scripts keep working.
-
-## Safety
-
-- rsync is never called with `--delete` by default
-- All archive/restore operations are logged to `~/.config/pwr/transactions.log`
-- Interrupted operations leave "started" records visible in `pwr log`
-- The `.project.toml` placeholder preserves project identity (UUID)
-- Dry-run mode available: `pwr archive --dry-run` / `pwr restore --dry-run`
-- Local files are only removed AFTER rsync completes successfully
-
-## Shell integration
-
-The `cd` wrapper checks for `.project.toml` and auto-restores archived projects:
-
-```bash
-# Bash
-eval "$(pwr shell bash)"
-
-# Zsh
-eval "$(pwr shell zsh)"
-
-# Fish
-pwr shell fish | source
-```
-
-## Requirements
-
-- Rust 1.96+
-- rsync 3.x
-- SSH access to a NAS (or any rsync-compatible remote)
+| `pwr init` | Create client config (~/.config/pwr/config.toml) |
+| `pwr archive <path>` | Encrypt and upload project, leave placeholder |
+| `pwr restore <path>` | Download, decrypt, and extract project |
+| `pwr ensure <path>` | Ensure project is local (for shell cd wrapper) |
+| `pwr status` | Table of all tracked projects |
+| `pwr list` | List projects with paths |
+| `pwr log` | Transaction history |
+| `pwr shell <sh>` | Generate shell integration (bash/zsh/fish) |
+| `pwr tui` | Launch terminal UI (requires `--features tui`) |
 
 ## Configuration
 
-Stored at `~/.config/pwr/config.toml`:
+### Client (~/.config/pwr/config.toml)
+
+```toml
+version = 2
+server_host = "nas.local"
+server_port = 9742
+server_psk = "a1b2c3d4..."
+server_fingerprint = "sha256:..."
+local_root = "/home/jacob/Projects"
+connect_timeout_secs = 10
+transfer_timeout_secs = 300
+```
+
+### Server (/etc/pwr/server.toml)
 
 ```toml
 version = 1
-nas_host = "mynas"
-nas_user = "jacob"
-nas_base_path = "/srv/projects"
-local_root = "/home/jacob/Projects"
-
-[rsync_options]
-compress = true
-archive = true
-delete = false
-progress = true
-bwlimit = 0
-extra_flags = []
+listen_address = "0.0.0.0"
+listen_port = 9742
+storage_base_path = "/srv/pwr/projects"
+max_project_size_gb = 500
+tls_cert_path = "/etc/pwr/server.crt"
+tls_key_path = "/etc/pwr/server.key"
+auth_token = "a1b2c3d4..."
+max_connections = 32
+idle_timeout_secs = 300
 ```
+
+## Building from Source
+
+**Requirements**: Rust 1.96+, OpenSSL/LibreSSL development headers (for ring)
+
+```bash
+git clone https://github.com/jacob/psync
+cd psync
+cargo build --release           # CLI only
+cargo build --release --features tui  # With TUI
+cargo test                      # Run all tests
+```
+
+## License
+
+MIT
