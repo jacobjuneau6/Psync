@@ -12,6 +12,7 @@ use std::sync::Arc;
 use rustls::ServerConfig as TlsServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
+use crate::auth::RateLimiter;
 use crate::config::ServerConfig;
 use crate::handler::{self, HandlerContext};
 use crate::storage::ProjectStorage;
@@ -54,6 +55,7 @@ pub fn run(config: ServerConfig) -> Result<(), String> {
 
     let storage = ProjectStorage::new(config.clone())?;
     let storage = Arc::new(std::sync::RwLock::new(storage));
+    let rate_limiter = Arc::new(std::sync::Mutex::new(RateLimiter::new()));
 
     let tls_config = Arc::new(build_tls_config(&config)?);
 
@@ -74,6 +76,7 @@ pub fn run(config: ServerConfig) -> Result<(), String> {
         let config = config.clone();
         let psk = psk;
         let storage = storage.clone();
+        let rate_limiter = rate_limiter.clone();
         let tls_config = tls_config.clone();
 
         // Handle each connection on a dedicated thread
@@ -92,6 +95,7 @@ pub fn run(config: ServerConfig) -> Result<(), String> {
 
             let ctx = HandlerContext {
                 storage: storage.clone(),
+                rate_limiter: rate_limiter.clone(),
                 psk,
                 peer_addr,
                 connected_at: std::time::Instant::now(),

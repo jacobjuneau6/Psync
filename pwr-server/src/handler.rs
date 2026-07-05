@@ -7,19 +7,19 @@
 
 use pwr_core::frame::{FrameDecoder, FrameHeader};
 use pwr_core::protocol::{
-    self, ArchiveAccept, ArchiveComplete, ArchiveRequest, ClientMessage,
-    ErrorMessage, Handshake, HandshakeAck, MessageType, ProjectInfo,
-    RestoreAccept, RestoreComplete, RestoreRequest, ServerMessage,
-    StatusRequest, StatusResponse,
+    self, ArchiveComplete, ArchiveRequest, ClientMessage,
+    Handshake, ProjectInfo, RestoreRequest, ServerMessage,
+    StatusRequest,
 };
 use pwr_core::crypto;
 use ring::rand::SecureRandom;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use uuid::Uuid;
 
+use crate::auth::RateLimiter;
 use crate::storage::{ProjectStorage, StoredProject};
 
 // ---------------------------------------------------------------------------
@@ -57,6 +57,7 @@ struct RestoreSession {
 
 pub struct HandlerContext {
     pub storage: Arc<RwLock<ProjectStorage>>,
+    pub rate_limiter: Arc<Mutex<RateLimiter>>,
     pub psk: [u8; 32],
     pub peer_addr: SocketAddr,
     pub connected_at: Instant,
@@ -163,6 +164,20 @@ fn handle_handshake(
     hs: &Handshake,
     ctx: &HandlerContext,
 ) -> Result<(), String> {
+    // Rate limiting check
+    let peer_ip = ctx.peer_addr.ip();
+    {
+        let mut limiter = ctx.rate_limiter.lock().unwrap();
+        if !limiter.check_attempt(peer_ip) {
+            *state = ConnState::Closed;
+            send_server_msg(
+                stream,
+                &protocol::build_handshake_ack_failed("Too many authentication attempts — try again later"),
+            )?;
+            return Err("Rate limited".into());
+        }
+    }
+
     let expected_proof = crypto::compute_client_proof(&ctx.psk, &hs.nonce);
 
     if expected_proof != hs.proof {
@@ -173,6 +188,9 @@ fn handle_handshake(
         )?;
         return Err("Authentication failed".into());
     }
+
+    // Record successful auth for rate limiting
+    ctx.rate_limiter.lock().unwrap().record_success(peer_ip);
 
     // Generate server nonce and proof
     let mut server_nonce = [0u8; 32];
