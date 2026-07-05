@@ -10,7 +10,7 @@ use std::net::TcpListener;
 use std::sync::Arc;
 
 use rustls::ServerConfig as TlsServerConfig;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::pki_types::CertificateDer;
 
 use crate::auth::RateLimiter;
 use crate::config::ServerConfig;

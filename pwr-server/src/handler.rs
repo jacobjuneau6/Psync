@@ -532,7 +532,7 @@ fn handle_status(
 // ---------------------------------------------------------------------------
 
 fn send_server_msg(
-    stream: &mut (impl Write),
+    stream: &mut impl Write,
     msg: &ServerMessage,
 ) -> Result<(), String> {
     let frame = pwr_core::frame::encode_frame(msg, msg.message_type())
