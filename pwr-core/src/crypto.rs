@@ -214,6 +214,38 @@ pub fn age_decrypt(encrypted: &[u8], identity: &Identity) -> Result<Vec<u8>> {
 }
 
 // ---------------------------------------------------------------------------
+// HKDF key derivation
+// ---------------------------------------------------------------------------
+
+/// Derive a per-project encryption key from the master PSK using HKDF-SHA256.
+///
+/// Uses the project UUID bytes as the info parameter to bind the derived
+/// key to a specific project. The same PSK and UUID always produce the
+/// same 256-bit key, enabling deterministic re-derivation without storing
+/// per-project keys on disk.
+///
+/// The key derivation uses HKDF-Expand with SHA-256, taking the PSK as
+/// the initial key material and the project UUID as context info.
+pub fn derive_project_key(psk: &[u8; 32], project_uuid: &uuid::Uuid) -> [u8; 32] {
+    use ring::hkdf::{Salt, HKDF_SHA256};
+
+    // Use the PSK as the salt for HKDF-Extract
+    let salt = Salt::new(HKDF_SHA256, psk);
+    // Use the project UUID bytes as the info for HKDF-Expand
+    let info = project_uuid.as_bytes();
+
+    // Extract + expand to produce 32 bytes of output key material
+    let mut derived = [0u8; 32];
+    salt.extract(&[])
+        .expand(&[info], HKDF_SHA256)
+        .expect("HKDF-Expand failure")
+        .fill(&mut derived)
+        .expect("HKDF fill failure: output length exceeds limit");
+
+    derived
+}
+
+// ---------------------------------------------------------------------------
 // SHA-256 hashing (delegates to integrity module)
 // ---------------------------------------------------------------------------
 
@@ -338,5 +370,46 @@ mod tests {
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
         );
         Ok(())
+    }
+
+    // HKDF tests
+    #[test]
+    fn test_derive_project_key_deterministic() {
+        let psk = [0x42; 32];
+        let uuid = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+
+        let key1 = derive_project_key(&psk, &uuid);
+        let key2 = derive_project_key(&psk, &uuid);
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn test_derive_project_key_different_uuids_produce_different_keys() {
+        let psk = [0x42; 32];
+        let uuid1 = uuid::Uuid::new_v4();
+        let uuid2 = uuid::Uuid::new_v4();
+
+        let key1 = derive_project_key(&psk, &uuid1);
+        let key2 = derive_project_key(&psk, &uuid2);
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_derive_project_key_different_psks_produce_different_keys() {
+        let psk1 = [0x11; 32];
+        let psk2 = [0x22; 32];
+        let uuid = uuid::Uuid::new_v4();
+
+        let key1 = derive_project_key(&psk1, &uuid);
+        let key2 = derive_project_key(&psk2, &uuid);
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_derive_project_key_output_length() {
+        let psk = generate_psk();
+        let uuid = uuid::Uuid::new_v4();
+        let key = derive_project_key(&psk, &uuid);
+        assert_eq!(key.len(), 32);
     }
 }
