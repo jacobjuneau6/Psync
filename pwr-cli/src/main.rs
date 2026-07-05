@@ -106,6 +106,10 @@ enum Commands {
         #[arg(long, short = 'e')]
         errors: bool,
     },
+
+    /// Launch the terminal UI for interactive project management
+    #[cfg(feature = "tui")]
+    Tui,
 }
 
 fn main() {
@@ -142,12 +146,27 @@ fn main() {
         }
 
         Commands::Log { project, errors } => cmd_log(project, errors),
+
+        #[cfg(feature = "tui")]
+        Commands::Tui => cmd_tui(),
     };
 
     if let Err(err) = result {
         eprintln!("Error: {}", err);
         std::process::exit(1);
     }
+}
+
+// ---------------------------------------------------------------------------
+// TUI entry point
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "tui")]
+mod tui;
+
+#[cfg(feature = "tui")]
+fn cmd_tui() -> Result<(), String> {
+    tui::run()
 }
 
 // ---------------------------------------------------------------------------

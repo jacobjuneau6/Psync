@@ -16,7 +16,9 @@ pub trait Screen {
 pub mod project_list;
 pub mod project_creator;
 pub mod log_viewer;
+pub mod operation;
 
 pub use project_list::ProjectListScreen;
 pub use project_creator::ProjectCreatorScreen;
 pub use log_viewer::LogViewerScreen;
+pub use operation::OperationOverlay;
