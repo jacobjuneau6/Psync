@@ -51,6 +51,10 @@ enum Commands {
         /// Dry run — show what would happen without doing it
         #[arg(long, short = 'n')]
         dry_run: bool,
+
+        /// Use TLS for the server connection
+        #[arg(long)]
+        tls: bool,
     },
 
     /// Restore a project from the server
@@ -61,6 +65,10 @@ enum Commands {
         /// Dry run — show what would happen without doing it
         #[arg(long, short = 'n')]
         dry_run: bool,
+
+        /// Use TLS for the server connection
+        #[arg(long)]
+        tls: bool,
     },
 
     /// Ensure a project is local (for shell wrapper integration)
@@ -71,6 +79,10 @@ enum Commands {
         /// Suppress output
         #[arg(long, short = 'q')]
         quiet: bool,
+
+        /// Use TLS for the server connection
+        #[arg(long)]
+        tls: bool,
     },
 
     /// Show status of all tracked projects
@@ -78,6 +90,10 @@ enum Commands {
         /// Search recursively for projects
         #[arg(long, short = 'r')]
         recursive: bool,
+
+        /// Use TLS for the server connection
+        #[arg(long)]
+        tls: bool,
     },
 
     /// List all tracked projects with paths
@@ -85,6 +101,10 @@ enum Commands {
         /// Search recursively for projects
         #[arg(long, short = 'r')]
         recursive: bool,
+
+        /// Use TLS for the server connection
+        #[arg(long)]
+        tls: bool,
     },
 
     /// Generate shell integration script
@@ -96,6 +116,10 @@ enum Commands {
         /// Print initialization instructions
         #[arg(long)]
         init: bool,
+
+        /// Automatically append to the shell rc file
+        #[arg(long)]
+        auto_install: bool,
     },
 
     /// Show transaction history
@@ -106,6 +130,10 @@ enum Commands {
         /// Show error details
         #[arg(long, short = 'e')]
         errors: bool,
+
+        /// Limit the number of entries shown
+        #[arg(long, default_value = "50")]
+        limit: usize,
     },
 }
 
@@ -124,25 +152,25 @@ fn main() {
             local_root,
         } => cmd_init(server_host, server_port, psk, local_root),
 
-        Commands::Archive { path, dry_run } => cmd_archive(path, dry_run),
+        Commands::Archive { path, dry_run, tls } => cmd_archive(path, dry_run, tls),
 
-        Commands::Restore { path, dry_run } => cmd_restore(path, dry_run),
+        Commands::Restore { path, dry_run, tls } => cmd_restore(path, dry_run, tls),
 
-        Commands::Ensure { path, quiet } => cmd_ensure(path, quiet),
+        Commands::Ensure { path, quiet, tls } => cmd_ensure(path, quiet, tls),
 
-        Commands::Status { recursive } => cmd_status(recursive),
+        Commands::Status { recursive, tls } => cmd_status(recursive, tls),
 
-        Commands::List { recursive } => cmd_list(recursive),
+        Commands::List { recursive, tls } => cmd_list(recursive, tls),
 
-        Commands::Shell { shell, init } => {
-            if init {
-                cmd_shell_init(&shell)
+        Commands::Shell { shell, init, auto_install } => {
+            if init || auto_install {
+                cmd_shell_init(&shell, auto_install)
             } else {
                 cmd_shell(&shell)
             }
         }
 
-        Commands::Log { project, errors } => cmd_log(project, errors),
+        Commands::Log { project, errors, limit } => cmd_log(project, errors, limit),
     };
 
     if let Err(err) = result {
@@ -196,7 +224,7 @@ fn cmd_init(
     Ok(())
 }
 
-fn cmd_archive(path: PathBuf, dry_run: bool) -> Result<(), String> {
+fn cmd_archive(path: PathBuf, dry_run: bool, use_tls: bool) -> Result<(), String> {
     use pwr_core::config::load_config;
     use pwr_core::project;
 
@@ -274,7 +302,7 @@ fn cmd_archive(path: PathBuf, dry_run: bool) -> Result<(), String> {
 
     // Connect to server and upload with retry
     let mut client = client::with_retry(
-        || client::PwrClient::connect(&config, false),
+        || client::PwrClient::connect(&config, use_tls),
         3, 1000,
         |e| client::is_retryable_error(e),
     )
@@ -303,7 +331,7 @@ fn cmd_archive(path: PathBuf, dry_run: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_restore(path: PathBuf, dry_run: bool) -> Result<(), String> {
+fn cmd_restore(path: PathBuf, dry_run: bool, use_tls: bool) -> Result<(), String> {
     use pwr_core::config::load_config;
     use pwr_core::project;
 
@@ -337,7 +365,7 @@ fn cmd_restore(path: PathBuf, dry_run: bool) -> Result<(), String> {
 
     // Connect and download with retry
     let mut client = client::with_retry(
-        || client::PwrClient::connect(&config, false),
+        || client::PwrClient::connect(&config, use_tls),
         3, 1000,
         |e| client::is_retryable_error(e),
     )
@@ -373,7 +401,7 @@ fn cmd_restore(path: PathBuf, dry_run: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_ensure(path: PathBuf, quiet: bool) -> Result<(), String> {
+fn cmd_ensure(path: PathBuf, quiet: bool, _use_tls: bool) -> Result<(), String> {
     use pwr_core::project;
 
     let abs_path = if path.is_absolute() {
@@ -392,13 +420,13 @@ fn cmd_ensure(path: PathBuf, quiet: bool) -> Result<(), String> {
         if !quiet {
             println!("Project archived. Restoring...");
         }
-        return cmd_restore(abs_path, false);
+        return cmd_restore(abs_path, false, false);
     }
 
     Err(format!("No such project: {}", path.display()))
 }
 
-fn cmd_status(recursive: bool) -> Result<(), String> {
+fn cmd_status(recursive: bool, _use_tls: bool) -> Result<(), String> {
     use pwr_core::config::load_config;
     use pwr_core::project;
 
@@ -447,8 +475,8 @@ fn cmd_status(recursive: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_list(recursive: bool) -> Result<(), String> {
-    cmd_status(recursive) // Same output format
+fn cmd_list(recursive: bool, _use_tls: bool) -> Result<(), String> {
+    cmd_status(recursive, false) // Delegate with TLS off for local-only
 }
 
 fn cmd_shell(shell: &str) -> Result<(), String> {
@@ -462,7 +490,7 @@ fn cmd_shell(shell: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_shell_init(shell: &str) -> Result<(), String> {
+fn cmd_shell_init(shell: &str, auto_install: bool) -> Result<(), String> {
     let home = std::env::var("HOME").unwrap_or_default();
     let rc_file = match shell {
         "bash" => format!("{}/.bashrc", home),
@@ -470,12 +498,26 @@ fn cmd_shell_init(shell: &str) -> Result<(), String> {
         "fish" => format!("{}/.config/fish/config.fish", home),
         _ => return Err(format!("Unsupported shell: {}", shell)),
     };
-    println!("Add this to {}:\n", rc_file);
-    println!("eval \"$(pwr shell {})\"", shell);
+
+    let eval_line = format!("\n# pwr — lazy project archiver\neval \"$(pwr shell {})\"\n", shell);
+
+    if auto_install {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&rc_file)
+            .map_err(|e| format!("Cannot open {}: {}", rc_file, e))?;
+        f.write_all(eval_line.as_bytes())
+            .map_err(|e| format!("Cannot write to {}: {}", rc_file, e))?;
+        println!("Shell integration installed to {}", rc_file);
+    } else {
+        println!("Add this to {}:\n{}", rc_file, eval_line);
+    }
     Ok(())
 }
 
-fn cmd_log(project: Option<String>, show_errors: bool) -> Result<(), String> {
+fn cmd_log(project: Option<String>, show_errors: bool, limit: usize) -> Result<(), String> {
     use pwr_core::transaction;
 
     let transactions = transaction::read_transactions()
@@ -492,7 +534,8 @@ fn cmd_log(project: Option<String>, show_errors: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    for tx in &filtered {
+    let count = filtered.len().min(limit);
+    for tx in filtered.iter().take(limit) {
         let status = match tx.status {
             pwr_core::transaction::TransactionStatus::Completed => "OK",
             pwr_core::transaction::TransactionStatus::Failed => "FAILED",
@@ -511,6 +554,10 @@ fn cmd_log(project: Option<String>, show_errors: bool) -> Result<(), String> {
                 println!("  Error: {}", err);
             }
         }
+    }
+
+    if filtered.len() > limit {
+        println!("(showing {} of {} entries)", limit, filtered.len());
     }
 
     Ok(())
