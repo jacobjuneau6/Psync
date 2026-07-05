@@ -151,7 +151,7 @@ fn dispatch(
             Err("Handshake required before any other message".into())
         }
         (ConnState::Closed, _) => Err("Connection is closed".into()),
-        (_, msg) => Err(format!(
+        (_, _msg) => Err(format!(
             "Unexpected message in state {:?}",
             std::mem::discriminant(state)
         )),

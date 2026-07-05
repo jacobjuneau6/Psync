@@ -10,7 +10,7 @@ use std::net::TcpListener;
 use std::sync::Arc;
 
 use rustls::ServerConfig as TlsServerConfig;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::pki_types::CertificateDer;
 
 use crate::auth::RateLimiter;
 use crate::config::ServerConfig;
@@ -73,7 +73,6 @@ pub fn run(config: ServerConfig) -> Result<(), String> {
             .peer_addr()
             .unwrap_or_else(|_| "unknown".parse().unwrap());
 
-        let config = config.clone();
         let psk = psk;
         let storage = storage.clone();
         let rate_limiter = rate_limiter.clone();
