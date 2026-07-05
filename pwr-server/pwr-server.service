@@ -1,0 +1,33 @@
+[Unit]
+Description=pwr-server — Lazy Project Archiver daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pwr
+Group=pwr
+ExecStart=/usr/local/bin/pwr-server --config /etc/pwr/server.toml start --foreground
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pwr-server
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/srv/pwr/projects
+ReadOnlyPaths=/etc/pwr/server.toml /etc/pwr/server.crt /etc/pwr/server.key
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+# Resource limits
+LimitNOFILE=4096
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
