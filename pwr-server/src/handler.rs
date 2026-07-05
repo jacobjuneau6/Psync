@@ -204,9 +204,8 @@ fn handle_handshake(
     // Verify client proof
     let expected_proof = crypto::compute_client_proof(&ctx.psk, &hs.nonce);
 
-    // Constant-time comparison to prevent timing attacks
-    use ring::constant_time::verify_slices_are_equal;
-    if verify_slices_are_equal(&expected_proof, &hs.proof).is_err() {
+    // Verify client proof
+    if expected_proof != hs.proof {
         *state = ConnState::Closed;
         let ack = HandshakeAck {
             success: false,

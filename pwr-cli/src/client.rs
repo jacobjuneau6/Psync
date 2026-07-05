@@ -6,12 +6,13 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use pwr_core::config::PwrConfig;
 use pwr_core::crypto;
 use pwr_core::frame::{self, FrameDecoder};
 use pwr_core::protocol::*;
+use ring::rand::SecureRandom;
 
 /// Result type for client operations.
 pub type ClientResult<T> = Result<T, String>;
@@ -212,7 +213,7 @@ fn perform_handshake(
 ) -> ClientResult<()> {
     // Generate nonce and proof
     let mut nonce = [0u8; 32];
-    ring::rand::SecureRandom::new()
+    ring::rand::SystemRandom::new()
         .fill(&mut nonce)
         .map_err(|_| "CSPRNG failure".to_string())?;
 
@@ -243,8 +244,7 @@ fn perform_handshake(
     let expected_server_proof =
         crypto::compute_server_proof(psk, &nonce, &ack.server_nonce);
 
-    use ring::constant_time::verify_slices_are_equal;
-    if verify_slices_are_equal(&expected_server_proof, &ack.server_proof).is_err() {
+    if expected_server_proof != ack.server_proof {
         return Err("Server authentication failed: invalid server proof".into());
     }
 
