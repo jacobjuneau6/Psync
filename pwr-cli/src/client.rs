@@ -6,7 +6,6 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::Arc;
 use std::time::Duration;
 
 use pwr_core::config::PwrConfig;
@@ -243,7 +242,7 @@ fn connect_tls(
     pinned_fingerprint: Option<&str>,
     psk: &[u8; 32],
 ) -> ClientResult<(TlsStream, FrameDecoder)> {
-    use rustls::pki_types::{ServerName, TrustAnchor};
+    use rustls::pki_types::ServerName;
     use std::sync::Arc;
 
     // Build root cert store with webpki roots
@@ -267,7 +266,7 @@ fn connect_tls(
         .map_err(|e| format!("Invalid server name: {}", e))?
         .to_owned();
 
-    let mut conn = rustls::ClientConnection::new(Arc::new(client_config), server_name)
+    let conn = rustls::ClientConnection::new(Arc::new(client_config), server_name)
         .map_err(|e| format!("TLS client config error: {}", e))?;
 
     let mut tls_stream = rustls::StreamOwned::new(conn, tcp_stream);
@@ -320,7 +319,6 @@ impl rustls::client::danger::ServerCertVerifier for FingerprintVerifier {
         _cert: &rustls::pki_types::CertificateDer<'_>,
         _dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        // Delegate to default implementation
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
 
