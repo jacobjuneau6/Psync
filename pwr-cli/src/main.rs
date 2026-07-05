@@ -251,26 +251,41 @@ fn cmd_archive(path: PathBuf, dry_run: bool) -> Result<(), String> {
         .map_err(|e| format!("Cannot load age identity: {}", e))?;
     let public_key = identity.to_public().to_string();
 
-    // Create encrypted archive
-    println!("Creating encrypted archive...");
-    let (encrypted, hash) =
-        pwr_core::archive::create_archive(&abs_path, &public_key)
-            .map_err(|e| format!("Archive creation failed: {}", e))?;
+    // Create encrypted archive with progress bar
+    let pb = progress::archive_progress_bar(size);
+    let pb2 = pb.clone();
+
+    let cb: pwr_core::archive::ProgressFn = Box::new(move |stage, frac| {
+        progress::update_archive_progress(&pb2, stage, frac);
+    });
+    let (encrypted, hash) = pwr_core::archive::create_archive_with_progress(
+        &abs_path,
+        &public_key,
+        Some(&cb),
+    )
+    .map_err(|e| format!("Archive creation failed: {}", e))?;
+    pb.finish_and_clear();
 
     println!(
-        "Encrypted archive: {} bytes (SHA-256: {})",
+        "Encrypted archive: {} (SHA-256: {})",
         pwr_core::metadata::human_size(encrypted.len() as u64),
         &hash[..16]
     );
 
-    // Connect to server and upload
-    println!("Connecting to {}...", config.server_addr());
-    let mut client = client::PwrClient::connect(&config, false)
-        .map_err(|e| format!("Connection failed: {}", e))?;
+    // Connect to server and upload with retry
+    let mut client = client::with_retry(
+        || client::PwrClient::connect(&config, false),
+        3, 1000,
+        |e| client::is_retryable_error(e),
+    )
+    .map_err(|e| format!("Connection failed: {}", e))?;
 
+    let upload_pb = progress::archive_progress_bar(encrypted.len() as u64);
+    upload_pb.set_message("Uploading to server...");
     client
         .archive_project(&meta.uuid, project_name, &encrypted, &hash)
         .map_err(|e| format!("Archive failed: {}", e))?;
+    upload_pb.finish_and_clear();
 
     // Update local metadata and clean up
     let file_count = project::file_count(&abs_path).map_err(|e| format!("{}", e))?;
@@ -320,22 +335,31 @@ fn cmd_restore(path: PathBuf, dry_run: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    // Connect and download
-    let mut client = client::PwrClient::connect(&config, false)
-        .map_err(|e| format!("Connection failed: {}", e))?;
+    // Connect and download with retry
+    let mut client = client::with_retry(
+        || client::PwrClient::connect(&config, false),
+        3, 1000,
+        |e| client::is_retryable_error(e),
+    )
+    .map_err(|e| format!("Connection failed: {}", e))?;
 
+    let download_pb = progress::restore_progress_bar(meta.size_bytes);
+    download_pb.set_message("Downloading from server...");
     let encrypted = client
         .restore_project(&meta.uuid)
         .map_err(|e| format!("Restore failed: {}", e))?;
+    download_pb.finish_and_clear();
 
-    // Decrypt and extract
-    println!("Decrypting and extracting...");
+    // Decrypt and extract with progress
+    let extract_pb = progress::restore_progress_bar(encrypted.len() as u64);
+    extract_pb.set_message("Decrypting and extracting...");
     let identity = pwr_core::crypto::load_age_identity()
         .map_err(|e| format!("Cannot load age identity: {}", e))?;
 
     let hash = pwr_core::crypto::sha256_hex(&encrypted);
     pwr_core::archive::extract_archive(&encrypted, &identity, &abs_path, &hash)
         .map_err(|e| format!("Extraction failed: {}", e))?;
+    extract_pb.finish_and_clear();
 
     // Update metadata
     let mut updated = meta.clone();
