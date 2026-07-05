@@ -4,6 +4,7 @@
 //! them on demand. Supports CLI mode and an optional TUI.
 
 mod client;
+mod progress;
 
 use std::path::PathBuf;
 
