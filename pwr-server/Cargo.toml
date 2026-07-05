@@ -7,6 +7,10 @@ repository.workspace = true
 authors.workspace = true
 description = "pwr daemon: runs on the NAS, handles project storage and retrieval over TLS"
 
+[lib]
+name = "pwr_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "pwr-server"
 path = "src/main.rs"

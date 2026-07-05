@@ -9,6 +9,7 @@
 //! - `start` — Run the daemon (bind, accept, serve)
 //! - `status` — Check whether a server is reachable on the configured port
 
+// Module declarations for the binary target
 mod auth;
 mod cert;
 mod config;
