@@ -36,6 +36,7 @@ enum ConnState {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct ArchiveSession {
     session_id: Uuid,
     project_uuid: Uuid,
@@ -47,6 +48,7 @@ struct ArchiveSession {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct RestoreSession {
     session_id: Uuid,
     project_uuid: Uuid,
