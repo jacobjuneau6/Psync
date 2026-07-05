@@ -3,7 +3,7 @@
 //! Archives projects to a pwr-server daemon on a NAS and restores
 //! them on demand. Supports CLI mode and an optional TUI.
 
-mod client;
+pub mod client;
 mod progress;
 
 use std::path::PathBuf;
