@@ -103,12 +103,27 @@ impl PwrClient {
     ///
     /// `archive_data` is the fully encrypted tar.gz.age blob.
     /// `archive_hash` is its SHA-256 hex hash for server-side verification.
+    /// An optional progress callback receives bytes sent so far and total.
     pub fn archive_project(
         &mut self,
         project_uuid: &uuid::Uuid,
         project_name: &str,
         archive_data: &[u8],
         archive_hash: &str,
+    ) -> ClientResult<()> {
+        self.archive_project_with_progress(
+            project_uuid, project_name, archive_data, archive_hash, None,
+        )
+    }
+
+    /// Archive with progress callback: fn(bytes_sent, total_bytes).
+    pub fn archive_project_with_progress(
+        &mut self,
+        project_uuid: &uuid::Uuid,
+        project_name: &str,
+        archive_data: &[u8],
+        archive_hash: &str,
+        progress: Option<&dyn Fn(u64, u64)>,
     ) -> ClientResult<()> {
         // Send ArchiveRequest using protocol builder
         let req = protocol::build_archive_request(
@@ -131,6 +146,8 @@ impl PwrClient {
 
         // Stream the archive data in chunks
         let chunk_size = 1024 * 1024; // 1 MiB
+        let mut bytes_sent = 0u64;
+        let total = archive_data.len() as u64;
         for (i, chunk) in archive_data.chunks(chunk_size).enumerate() {
             self.stream
                 .write_all(&(chunk.len() as u32).to_be_bytes())
@@ -138,6 +155,10 @@ impl PwrClient {
             self.stream
                 .write_all(chunk)
                 .map_err(|e| format!("chunk data write: {}", e))?;
+            bytes_sent += chunk.len() as u64;
+            if let Some(ref cb) = progress {
+                cb(bytes_sent, total);
+            }
             log::debug!("Sent chunk {} ({} bytes)", i, chunk.len());
         }
 
@@ -165,6 +186,15 @@ impl PwrClient {
     pub fn restore_project(
         &mut self,
         project_uuid: &uuid::Uuid,
+    ) -> ClientResult<Vec<u8>> {
+        self.restore_project_with_progress(project_uuid, None)
+    }
+
+    /// Restore with progress callback: fn(bytes_received, total_bytes).
+    pub fn restore_project_with_progress(
+        &mut self,
+        project_uuid: &uuid::Uuid,
+        progress: Option<&dyn Fn(u64, u64)>,
     ) -> ClientResult<Vec<u8>> {
         // Send RestoreRequest
         let req = protocol::build_restore_request(*project_uuid);
@@ -199,6 +229,10 @@ impl PwrClient {
             self.stream
                 .read_exact(&mut data[start..])
                 .map_err(|e| format!("chunk data read: {}", e))?;
+
+            if let Some(ref cb) = progress {
+                cb(data.len() as u64, total_size);
+            }
         }
 
         log::info!("Restored {} bytes", data.len());
