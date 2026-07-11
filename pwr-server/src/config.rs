@@ -2,6 +2,87 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+// ---------------------------------------------------------------------------
+// XDG / system path resolution
+// ---------------------------------------------------------------------------
+
+/// System-wide config directory.
+pub fn system_config_dir() -> PathBuf {
+    PathBuf::from("/etc/pwr")
+}
+
+/// System-wide data (storage) directory.
+pub fn system_data_dir() -> PathBuf {
+    PathBuf::from("/srv/pwr/projects")
+}
+
+/// Per-user XDG config directory (`~/.config/pwr`).
+pub fn user_config_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("~/.config"))
+        .join("pwr")
+}
+
+/// Per-user XDG data directory (`~/.local/share/pwr`).
+pub fn user_data_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("~/.local/share"))
+        .join("pwr")
+}
+
+/// Per-user XDG runtime directory (`$XDG_RUNTIME_DIR/pwr`, falls back
+/// to `~/.cache/pwr`).
+pub fn user_runtime_dir() -> PathBuf {
+    dirs::runtime_dir()
+        .unwrap_or_else(|| dirs::cache_dir().unwrap_or_else(|| PathBuf::from("~/.cache")))
+        .join("pwr")
+}
+
+/// Check whether the target path (or, if it doesn't exist yet, its nearest
+/// existing ancestor) is writable by the current process.
+///
+/// Uses `access(2)` (the POSIX `W_OK` check) so it correctly tests against
+/// the effective uid/gid — unlike `Permissions::readonly()` which only
+/// inspects mode bits and doesn't account for file ownership.
+pub fn is_path_writable(path: &Path) -> bool {
+    // If the path itself exists, check it directly with access(2).
+    if path.exists() {
+        return access_w_ok(path);
+    }
+
+    // Otherwise walk up to the nearest existing ancestor and check that.
+    let mut ancestor = path.to_path_buf();
+    loop {
+        if !ancestor.pop() {
+            return false; // hit filesystem root without finding anything
+        }
+        if ancestor.exists() {
+            return access_w_ok(&ancestor);
+        }
+    }
+}
+
+/// Thin wrapper around `access(path, W_OK)`.
+fn access_w_ok(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = path.as_os_str().as_bytes();
+    let c_path = std::ffi::CString::new(bytes).unwrap_or_else(|_| std::ffi::CString::new(".").unwrap());
+    unsafe { libc::access(c_path.as_ptr(), libc::W_OK) == 0 }
+}
+
+/// Resolve the appropriate config base directory.
+///
+/// Returns the system path (`/etc/pwr`) if it already exists or is
+/// writable; otherwise falls back to the per-user XDG config directory.
+pub fn resolve_config_base() -> PathBuf {
+    let system = system_config_dir();
+    if is_path_writable(&system) {
+        system
+    } else {
+        user_config_dir()
+    }
+}
+
 /// Server-side configuration, typically stored at `/etc/pwr/server.toml`
 /// or `~/.config/pwr/server.toml`.
 ///

@@ -16,8 +16,27 @@ use std::process;
 use std::thread;
 use std::time::Duration;
 
-/// Default path for the PID file written after successful daemonization.
-pub const DEFAULT_PID_FILE: &str = "/run/pwr/pwr-server.pid";
+/// Default path for the PID file written after successful daemonization
+/// (system-wide install).
+pub const SYSTEM_PID_FILE: &str = "/run/pwr/pwr-server.pid";
+
+/// Return the PID file path for a user-level install.
+pub fn user_pid_file() -> std::path::PathBuf {
+    crate::config::user_runtime_dir().join("pwr-server.pid")
+}
+
+/// Given a config file path, return the appropriate PID file.
+///
+/// - If the config lives under `/etc/pwr/`, use the system PID path.
+/// - Otherwise, use the per-user XDG runtime path.
+pub fn pid_file_for_config(config_path: &Path) -> std::path::PathBuf {
+    let system_base = crate::config::system_config_dir();
+    if config_path.starts_with(&system_base) {
+        std::path::PathBuf::from(SYSTEM_PID_FILE)
+    } else {
+        user_pid_file()
+    }
+}
 
 /// Daemonize the current process.
 ///

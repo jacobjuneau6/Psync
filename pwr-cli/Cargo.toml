@@ -20,7 +20,7 @@ name = "pwr"
 path = "src/main.rs"
 
 [dependencies]
-pwr-core = { version = "0.1.0", path = "../pwr-core" }
+pwr-core = { version = "0.3.0", path = "../pwr-core" }
 tokio.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true

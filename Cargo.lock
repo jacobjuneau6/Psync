@@ -1537,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "pwr-cli"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "age",
  "anyhow",
@@ -1569,7 +1569,7 @@ dependencies = [
 
 [[package]]
 name = "pwr-core"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "age",
  "bincode",
@@ -1590,7 +1590,7 @@ dependencies = [
 
 [[package]]
 name = "pwr-server"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",

@@ -93,7 +93,7 @@ fn main() {
 // Command implementations
 // ---------------------------------------------------------------------------
 
-fn cmd_init(config_path: &PathBuf, hostname: Option<String>) -> Result<(), String> {
+fn cmd_init(cli_config: &PathBuf, hostname: Option<String>) -> Result<(), String> {
     let hostname = hostname.unwrap_or_else(|| {
         // Try to get the system hostname, fall back to a default
         std::fs::read_to_string("/etc/hostname")
@@ -102,12 +102,35 @@ fn cmd_init(config_path: &PathBuf, hostname: Option<String>) -> Result<(), Strin
             .unwrap_or_else(|| "pwr-server".into())
     });
 
-    println!("Initializing pwr-server on '{}'...", hostname);
-    cert::init_server(config_path, &hostname)?;
+    // Determine where to place config files. If the CLI explicitly passed
+    // a non-default --config path, respect it (and derive the config-dir
+    // from it). Otherwise, auto-detect: prefer system dirs, fall back to
+    // per-user XDG dirs when not writable.
+    let (config_dir, storage_dir) = if cli_config.as_os_str() != "/etc/pwr/server.toml" {
+        // User gave an explicit config path — place everything alongside it.
+        let dir = cli_config
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let storage = config::user_data_dir();
+        (dir, storage)
+    } else {
+        // Auto-detect: use system paths if writable, else XDG user paths.
+        let base = config::resolve_config_base();
+        let is_system = base == config::system_config_dir();
+        let storage = if is_system {
+            config::system_data_dir()
+        } else {
+            config::user_data_dir()
+        };
+        (base, storage)
+    };
 
-    println!();
-    println!("To start the server:");
-    println!("  pwr-server --config {} start", config_path.display());
+    println!("Initializing pwr-server on '{}'...", hostname);
+    if !config::is_path_writable(&config_dir) {
+        println!("  (using {} — system paths not writable)", config_dir.display());
+    }
+    cert::init_server(&config_dir, &storage_dir, &hostname)?;
 
     Ok(())
 }
@@ -128,10 +151,11 @@ fn cmd_start(config_path: &PathBuf, foreground: bool) -> Result<(), String> {
     tracing::info!("Bind: {}", server_config.bind_addr());
 
     if !foreground {
-        // Daemonize before starting the listener. After this call returns,
-        // we are the grandchild process with no controlling terminal.
-        daemon::daemonize(daemon::DEFAULT_PID_FILE.as_ref())?;
-        tracing::info!("Daemonized successfully (PID file: {})", daemon::DEFAULT_PID_FILE);
+        // Pick the right PID file: system vs. user-local, based on where
+        // the config file lives.
+        let pid_file = daemon::pid_file_for_config(&path);
+        daemon::daemonize(&pid_file)?;
+        tracing::info!("Daemonized successfully (PID file: {})", pid_file.display());
     }
 
     // Run the listener (blocks until shutdown signal)
@@ -177,17 +201,26 @@ fn cmd_status(config_path: &PathBuf) -> Result<(), String> {
 }
 
 fn cmd_stop() -> Result<(), String> {
-    match daemon::stop_daemon(daemon::DEFAULT_PID_FILE.as_ref()) {
-        Ok(summary) => {
-            println!("{}", summary);
-            Ok(())
-        }
-        Err(e) => {
-            // Distinguish "not running / stale PID" from a real failure:
-            // stop_daemon returns an Err for both, but we still exit 0 for
-            // "nothing to stop" to avoid breaking scripts.
-            eprintln!("{}", e);
-            Ok(())
+    // Try system PID file first, then user PID file.
+    let candidates = [
+        std::path::PathBuf::from(daemon::SYSTEM_PID_FILE),
+        daemon::user_pid_file(),
+    ];
+
+    let mut errors = Vec::new();
+    for pid_file in &candidates {
+        match daemon::stop_daemon(pid_file) {
+            Ok(summary) => {
+                println!("{}", summary);
+                return Ok(());
+            }
+            Err(e) => errors.push(e),
         }
     }
+
+    // Both failed — report and exit cleanly
+    for e in &errors {
+        eprintln!("{}", e);
+    }
+    Ok(())
 }

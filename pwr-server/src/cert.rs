@@ -80,18 +80,28 @@ pub fn save_certificate(
 }
 
 /// Generate a fresh server configuration with TLS certificates and PSK.
+///
+/// `config_dir` is the base directory for pwr-server files (e.g.
+/// `/etc/pwr` for system installs or `~/.config/pwr` for user installs).
+/// Cert and key files are written under this directory; the config file
+/// is written at `config_dir/server.toml`.
+///
+/// `storage_dir` is where project archives will be stored (e.g.
+/// `/srv/pwr/projects` or `~/.local/share/pwr/projects`).
 pub fn init_server(
-    config_path: &Path,
+    config_dir: &Path,
+    storage_dir: &Path,
     hostname: &str,
 ) -> Result<(), String> {
     use crate::config::{save_config, ServerConfig};
 
     let (cert_pem, key_pem, fingerprint) = generate_certificate(hostname)?;
 
-    let cert_path = Path::new("/etc/pwr/server.crt");
-    let key_path = Path::new("/etc/pwr/server.key");
+    let cert_path = config_dir.join("server.crt");
+    let key_path = config_dir.join("server.key");
+    let config_path = config_dir.join("server.toml");
 
-    save_certificate(cert_path, key_path, &cert_pem, &key_pem)?;
+    save_certificate(&cert_path, &key_path, &cert_pem, &key_pem)?;
 
     // Generate PSK
     let psk = pwr_core::crypto::generate_psk();
@@ -99,20 +109,25 @@ pub fn init_server(
 
     let mut config = ServerConfig::default();
     config.auth_token = psk_hex.clone();
-    config.tls_cert_path = cert_path.to_path_buf();
-    config.tls_key_path = key_path.to_path_buf();
+    config.tls_cert_path = cert_path.clone();
+    config.tls_key_path = key_path.clone();
+    config.storage_base_path = storage_dir.to_path_buf();
 
-    save_config(&config, config_path)?;
+    save_config(&config, &config_path)?;
 
     println!("Server initialized successfully.");
-    println!("  Config:     {}", config_path.display());
+    println!("  Config:      {}", config_path.display());
     println!("  Certificate: {}", cert_path.display());
     println!("  Private key: {}", key_path.display());
-    println!("  PSK:        {}", psk_hex);
+    println!("  Storage:     {}", storage_dir.display());
+    println!("  PSK:         {}", psk_hex);
     println!("  Fingerprint: {}", fingerprint);
     println!();
     println!("Copy the PSK to your client config:");
     println!("  pwr init --server-host {} --psk {}", hostname, psk_hex);
+    println!();
+    println!("To start the server:");
+    println!("  pwr-server --config {} start", config_path.display());
 
     Ok(())
 }
