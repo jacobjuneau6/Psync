@@ -1,5 +1,5 @@
 [package]
-name = "pwr"
+name = "pwr-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
