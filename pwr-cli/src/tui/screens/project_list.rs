@@ -41,15 +41,20 @@ impl ProjectListScreen {
             if let Ok(projects) = pwr_core::project::find_projects(&root) {
                 entries = projects
                     .into_iter()
-                    .map(|(_, meta)| ProjectEntry {
-                        name: meta.name,
-                        status: if meta.is_archived() {
-                            "archived".into()
-                        } else {
-                            "local".into()
-                        },
-                        size: meta.size_human(),
-                        last_sync: meta.last_sync.format("%Y-%m-%d").to_string(),
+                    .map(|(_, meta)| {
+                        let archived = meta.is_archived();
+                        let size = meta.size_human();
+                        let last_sync = meta.last_sync.format("%Y-%m-%d").to_string();
+                        ProjectEntry {
+                            name: meta.name,
+                            status: if archived {
+                                "archived".into()
+                            } else {
+                                "local".into()
+                            },
+                            size,
+                            last_sync,
+                        }
                     })
                     .collect();
             }
