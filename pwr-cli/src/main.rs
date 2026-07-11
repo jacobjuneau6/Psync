@@ -123,6 +123,13 @@ enum Commands {
 }
 
 fn main() {
+    // Install the rustls crypto provider before any TLS code runs.
+    // Required because the pwr-core → pwr-cli dependency chain pulls in
+    // both ring and aws-lc-rs, which prevents rustls from auto-detecting.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls ring crypto provider");
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .format_timestamp(None)
         .init();
