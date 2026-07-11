@@ -23,6 +23,11 @@ pub struct PwrConfig {
     /// Hex-encoded 256-bit pre-shared key for authentication.
     pub server_psk: String,
 
+    /// Whether to use TLS when connecting to the server.
+    /// Should match the server configuration (the server always uses TLS).
+    #[serde(default = "default_use_tls")]
+    pub use_tls: bool,
+
     /// SHA-256 fingerprint of the server's TLS certificate (hex).
     /// Used for certificate pinning.
     #[serde(default)]
@@ -42,6 +47,10 @@ pub struct PwrConfig {
 
 fn default_port() -> u16 {
     9742
+}
+
+fn default_use_tls() -> bool {
+    true
 }
 
 fn default_timeout() -> u64 {
@@ -65,6 +74,7 @@ impl PwrConfig {
             server_host,
             server_port,
             server_psk,
+            use_tls: true,
             server_fingerprint: None,
             local_root,
             connect_timeout_secs: 10,

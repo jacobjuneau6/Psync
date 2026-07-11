@@ -191,6 +191,16 @@ impl FrameDecoder {
     pub fn buffered_len(&self) -> usize {
         self.buffer.len()
     }
+
+    /// Drain all buffered bytes from the decoder.
+    ///
+    /// This is used when switching from frame-decoded mode to raw
+    /// chunk-streaming mode (e.g., archive upload). Any bytes already
+    /// read from the transport but not yet consumed as a frame are
+    /// returned so they can be processed as chunk data.
+    pub fn drain_bytes(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.buffer)
+    }
 }
 
 // ---------------------------------------------------------------------------

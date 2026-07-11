@@ -47,13 +47,14 @@ fn test_connect_timeout_is_respected() {
         server_host: "10.255.255.1".into(),
         server_port: 9742,
         server_psk: crypto::psk_to_hex(&crypto::generate_psk()),
+        use_tls: false,
         server_fingerprint: None,
         local_root: "/tmp/pwr-test".into(),
         connect_timeout_secs: 1,
         transfer_timeout_secs: 300,
     };
 
-    let result = PwrClient::connect(&config, false);
+    let result = PwrClient::connect(&config, config.use_tls);
     assert!(result.is_err(), "Connection to non-routable address should fail");
 }
 

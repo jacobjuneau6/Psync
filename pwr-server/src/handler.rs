@@ -93,7 +93,7 @@ pub fn handle_connection(
         loop {
             match decoder.try_decode() {
                 Ok(Some((header, payload))) => {
-                    if let Err(e) = dispatch(&mut stream, &mut state, header, &payload, &ctx) {
+                    if let Err(e) = dispatch(&mut stream, &mut decoder, &mut state, header, &payload, &ctx) {
                         send_server_msg(&mut stream, &protocol::build_error(1, &e))?;
                         return Err(e);
                     }
@@ -115,6 +115,7 @@ pub fn handle_connection(
 
 fn dispatch(
     stream: &mut (impl Read + Write),
+    decoder: &mut FrameDecoder,
     state: &mut ConnState,
     header: FrameHeader,
     payload: &[u8],
@@ -133,8 +134,10 @@ fn dispatch(
         // --- Archive flow ---
         (ConnState::Authenticated, ClientMessage::ArchiveRequest(req)) => {
             handle_archive_start(stream, state, &req, ctx)?;
-            // After accepting, receive raw chunk data for the archive blob
-            handle_archive_chunks(stream, state, ctx)
+            // Drain any bytes already buffered in the decoder — they
+            // belong to the chunk stream, not to the frame protocol.
+            let prefix = decoder.drain_bytes();
+            handle_archive_chunks(stream, state, ctx, &prefix)
         }
         (ConnState::Archiving(_), ClientMessage::ArchiveComplete(complete)) => {
             handle_archive_finish(stream, state, &complete, ctx)
@@ -328,10 +331,15 @@ fn handle_archive_finish(
 /// Receive raw chunk data from the client and write it to the project's
 /// archive file on disk. Chunks use the 4-byte length-prefixed format
 /// with a zero-length chunk indicating EOF.
+///
+/// `prefix` contains any bytes already read from the transport by the
+/// frame decoder that belong to the chunk stream rather than a frame.
+/// These are consumed first before reading more from `stream`.
 fn handle_archive_chunks(
     stream: &mut (impl Read + Write),
     state: &ConnState,
     ctx: &HandlerContext,
+    prefix: &[u8],
 ) -> Result<(), String> {
     let (project_uuid, _total_size) = match state {
         ConnState::Archiving(s) => (s.project_uuid, s.total_size),
@@ -339,26 +347,54 @@ fn handle_archive_chunks(
     };
 
     let mut total_bytes = 0u64;
-    let mut header_buf = [0u8; 4];
+
+    // Combine prefix bytes (drained from the frame decoder) with
+    // subsequent reads from the stream so we don't miss any data
+    // that was already buffered.
+    let mut buf = Vec::with_capacity(prefix.len() + 8192);
+    buf.extend_from_slice(prefix);
+    let mut pos: usize = 0;
 
     loop {
-        // Read 4-byte chunk length
-        stream
-            .read_exact(&mut header_buf)
-            .map_err(|e| format!("chunk header read: {}", e))?;
+        // Ensure we have at least 4 bytes for the chunk header
+        while buf.len() - pos < 4 {
+            let needed = 4 - (buf.len() - pos);
+            let start = buf.len();
+            buf.resize(start + needed.max(8192), 0);
+            let n = stream
+                .read(&mut buf[start..])
+                .map_err(|e| format!("chunk read: {}", e))?;
+            if n == 0 {
+                return Err("Connection closed during chunk transfer".into());
+            }
+            buf.truncate(start + n);
+        }
 
-        let chunk_len = u32::from_be_bytes(header_buf) as usize;
+        let chunk_len = u32::from_be_bytes([
+            buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3],
+        ]) as usize;
+        pos += 4;
 
         if chunk_len == 0 {
             break; // EOF
         }
 
-        // Read chunk data into a buffer and write to archive
-        let mut chunk = vec![0u8; chunk_len];
-        stream
-            .read_exact(&mut chunk)
-            .map_err(|e| format!("chunk data read: {}", e))?;
+        // Ensure we have the full chunk data
+        while buf.len() - pos < chunk_len {
+            let needed = chunk_len - (buf.len() - pos);
+            let start = buf.len();
+            buf.resize(start + needed.max(8192), 0);
+            let n = stream
+                .read(&mut buf[start..])
+                .map_err(|e| format!("chunk read: {}", e))?;
+            if n == 0 {
+                return Err("Connection closed during chunk data".into());
+            }
+            buf.truncate(start + n);
+        }
 
+        let chunk = &buf[pos..pos + chunk_len];
+        pos += chunk_len;
         total_bytes += chunk_len as u64;
 
         // Write chunk to the archive file
@@ -372,7 +408,7 @@ fn handle_archive_chunks(
                 .append(true)
                 .open(&archive_path)
                 .map_err(|e| format!("Cannot open archive: {}", e))?;
-            file.write_all(&chunk)
+            file.write_all(chunk)
                 .map_err(|e| format!("Cannot write chunk: {}", e))?;
         }
 
@@ -381,6 +417,12 @@ fn handle_archive_chunks(
             chunk_len,
             total_bytes
         );
+
+        // Compact the buffer: discard consumed bytes
+        if pos > 65536 {
+            buf.drain(..pos);
+            pos = 0;
+        }
     }
 
     log::info!(

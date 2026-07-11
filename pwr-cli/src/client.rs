@@ -210,28 +210,65 @@ impl PwrClient {
             other => return Err(format!("Unexpected response: {:?}", other.message_type())),
         };
 
+        // Drain the frame decoder: it may have buffered chunk bytes
+        // that were read from the transport alongside the RestoreAccept
+        // frame. Consume those first, then read remaining chunks from
+        // the stream.
+        let prefix = self.decoder.drain_bytes();
+
         // Receive raw chunk data until EOF
         let mut data = Vec::with_capacity(total_size as usize);
-        let mut header_buf = [0u8; 4];
+        let mut buf = Vec::with_capacity(prefix.len() + 8192);
+        buf.extend_from_slice(&prefix);
+        let mut pos: usize = 0;
 
         loop {
-            self.stream
-                .read_exact(&mut header_buf)
-                .map_err(|e| format!("chunk header read: {}", e))?;
+            // Ensure we have at least 4 bytes for the chunk header
+            while buf.len() - pos < 4 {
+                let start = buf.len();
+                buf.resize(start + 8192, 0);
+                let n = self.stream
+                    .read(&mut buf[start..])
+                    .map_err(|e| format!("chunk read: {}", e))?;
+                if n == 0 {
+                    return Err("Connection closed during chunk transfer".into());
+                }
+                buf.truncate(start + n);
+            }
 
-            let chunk_len = u32::from_be_bytes(header_buf) as usize;
+            let chunk_len = u32::from_be_bytes([
+                buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3],
+            ]) as usize;
+            pos += 4;
+
             if chunk_len == 0 {
                 break; // EOF
             }
 
-            let start = data.len();
-            data.resize(start + chunk_len, 0);
-            self.stream
-                .read_exact(&mut data[start..])
-                .map_err(|e| format!("chunk data read: {}", e))?;
+            // Ensure we have the full chunk data
+            while buf.len() - pos < chunk_len {
+                let start = buf.len();
+                buf.resize(start + (chunk_len - (buf.len() - pos)).max(8192), 0);
+                let n = self.stream
+                    .read(&mut buf[start..])
+                    .map_err(|e| format!("chunk read: {}", e))?;
+                if n == 0 {
+                    return Err("Connection closed during chunk data".into());
+                }
+                buf.truncate(start + n);
+            }
+
+            data.extend_from_slice(&buf[pos..pos + chunk_len]);
+            pos += chunk_len;
 
             if let Some(ref cb) = progress {
                 cb(data.len() as u64, total_size);
+            }
+
+            // Compact the buffer periodically
+            if pos > 65536 {
+                buf.drain(..pos);
+                pos = 0;
             }
         }
 

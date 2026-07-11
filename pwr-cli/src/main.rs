@@ -357,7 +357,7 @@ fn cmd_archive(path: PathBuf, dry_run: bool) -> Result<(), String> {
 
     // Connect to server and upload with progress bar
     println!("Connecting to {}...", config.server_addr());
-    let mut client = client::PwrClient::connect(&config, false)
+    let mut client = client::PwrClient::connect(&config, config.use_tls)
         .map_err(|e| format!("Connection failed: {}", e))?;
 
     let total = encrypted.len() as u64;
@@ -427,7 +427,7 @@ fn cmd_restore(path: PathBuf, dry_run: bool) -> Result<(), String> {
     }
 
     // Connect and download with progress bar
-    let mut client = client::PwrClient::connect(&config, false)
+    let mut client = client::PwrClient::connect(&config, config.use_tls)
         .map_err(|e| format!("Connection failed: {}", e))?;
 
     let pb = indicatif::ProgressBar::new(meta.size_bytes);
