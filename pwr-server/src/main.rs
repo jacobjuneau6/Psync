@@ -19,7 +19,7 @@ mod listener;
 mod storage;
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// pwr-server — NAS-side daemon for the pwr lazy project archiver
 #[derive(Parser)]
@@ -40,6 +40,11 @@ enum Commands {
         /// Hostname for the TLS certificate (default: system hostname)
         #[arg(long)]
         hostname: Option<String>,
+
+        /// Also install and enable the systemd service
+        /// (user service if unprivileged, system service if root)
+        #[arg(long)]
+        with_service: bool,
     },
 
     /// Start the pwr-server daemon
@@ -77,7 +82,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Init { hostname } => cmd_init(&cli.config, hostname),
+        Commands::Init { hostname, with_service } => cmd_init(&cli.config, hostname, with_service),
         Commands::Start { foreground } => cmd_start(&cli.config, foreground),
         Commands::Stop => cmd_stop(),
         Commands::Status => cmd_status(&cli.config),
@@ -93,7 +98,7 @@ fn main() {
 // Command implementations
 // ---------------------------------------------------------------------------
 
-fn cmd_init(cli_config: &PathBuf, hostname: Option<String>) -> Result<(), String> {
+fn cmd_init(cli_config: &PathBuf, hostname: Option<String>, with_service: bool) -> Result<(), String> {
     let hostname = hostname.unwrap_or_else(|| {
         // Try to get the system hostname, fall back to a default
         std::fs::read_to_string("/etc/hostname")
@@ -132,8 +137,178 @@ fn cmd_init(cli_config: &PathBuf, hostname: Option<String>) -> Result<(), String
     }
     cert::init_server(&config_dir, &storage_dir, &hostname)?;
 
+    if with_service {
+        install_service(&config_dir)?;
+    }
+
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Systemd service installation
+// ---------------------------------------------------------------------------
+
+/// Install the systemd service file and reload the daemon.
+///
+/// Detects whether we're running as root:
+/// - root → installs a system service to /etc/systemd/system/
+/// - unprivileged → installs a user service to ~/.config/systemd/user/
+///
+/// The installed unit file uses the current binary path so it works
+/// regardless of where pwr-server was built from.
+fn install_service(config_dir: &Path) -> Result<(), String> {
+    let is_root = unsafe { libc::geteuid() == 0 };
+    let current_exe = std::env::current_exe()
+        .map_err(|e| format!("Cannot determine binary path: {}", e))?;
+    let exe_path = current_exe.to_string_lossy();
+    let config_path = config_dir.join("server.toml");
+    let config_str = config_path.to_string_lossy();
+
+    // Substitute placeholders in the template.
+    // We can't use format!() with a runtime format string, so use .replace().
+    let substitute = |template: &str| -> String {
+        template
+            .replace("{exe}", &exe_path)
+            .replace("{config}", &config_str)
+    };
+
+    if is_root {
+        // --- System service ---
+        let unit = substitute(SYSTEM_SERVICE_TEMPLATE);
+
+        let dest = PathBuf::from("/etc/systemd/system/pwr-server.service");
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
+        }
+        std::fs::write(&dest, &unit)
+            .map_err(|e| format!("write {}: {}", dest.display(), e))?;
+
+        println!();
+        println!("System service installed to {}", dest.display());
+
+        // Reload systemd
+        run_cmd("systemctl", &["daemon-reload"])?;
+
+        println!();
+        println!("Enable and start the service:");
+        println!("  sudo systemctl enable --now pwr-server");
+    } else {
+        // --- User service ---
+        let unit = substitute(USER_SERVICE_TEMPLATE);
+
+        let dest = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("~/.config"))
+            .join("systemd/user/pwr-server.service");
+
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
+        }
+        std::fs::write(&dest, &unit)
+            .map_err(|e| format!("write {}: {}", dest.display(), e))?;
+
+        println!();
+        println!("User service installed to {}", dest.display());
+
+        // Reload systemd --user
+        run_cmd("systemctl", &["--user", "daemon-reload"])?;
+
+        println!();
+        println!("Enable and start the service:");
+        println!("  systemctl --user enable --now pwr-server");
+        println!();
+        println!("To have the service survive logout:");
+        println!("  sudo loginctl enable-linger $USER");
+    }
+
+    Ok(())
+}
+
+/// Thin wrapper around Command::spawn + wait for systemctl calls.
+fn run_cmd(cmd: &str, args: &[&str]) -> Result<(), String> {
+    let status = std::process::Command::new(cmd)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("Cannot run {}: {}", cmd, e))?;
+
+    if !status.success() {
+        // Non-fatal: systemctl might not be available or user isn't
+        // running systemd. Just warn and continue.
+        println!("  (warning: {} {:?} returned exit code {:?})",
+            cmd, args, status.code());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Embedded service templates
+// ---------------------------------------------------------------------------
+
+/// Template for the system-wide service.
+/// {exe} = path to the current pwr-server binary
+/// {config} = path to server.toml
+const SYSTEM_SERVICE_TEMPLATE: &str = r#"[Unit]
+Description=pwr-server — Lazy Project Archiver daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={exe} --config {config} start --foreground
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pwr-server
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+# Resource limits
+LimitNOFILE=4096
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
+"#;
+
+/// Template for the per-user service.
+/// {exe} = path to the current pwr-server binary
+/// {config} = path to server.toml
+const USER_SERVICE_TEMPLATE: &str = r#"[Unit]
+Description=pwr-server — Lazy Project Archiver daemon (user)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={exe} --config {config} start --foreground
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pwr-server
+
+# Security hardening (user-level)
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+# Resource limits
+LimitNOFILE=4096
+MemoryMax=512M
+
+[Install]
+WantedBy=default.target
+"#;
 
 fn cmd_start(config_path: &PathBuf, foreground: bool) -> Result<(), String> {
     // Find and load config

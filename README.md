@@ -114,6 +114,7 @@ version = 2
 server_host = "nas.local"
 server_port = 9742
 server_psk = "a1b2c3d4..."
+use_tls = true
 server_fingerprint = "sha256:..."
 local_root = "/home/jacob/Projects"
 connect_timeout_secs = 10

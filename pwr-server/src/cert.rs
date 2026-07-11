@@ -128,6 +128,15 @@ pub fn init_server(
     println!();
     println!("To start the server:");
     println!("  pwr-server --config {} start", config_path.display());
+    println!();
+    println!("To install as a systemd user service (no root needed):");
+    println!("  mkdir -p ~/.config/systemd/user");
+    println!("  cp pwr-server.user.service ~/.config/systemd/user/pwr-server.service");
+    println!("  systemctl --user daemon-reload");
+    println!("  systemctl --user enable --now pwr-server");
+    println!();
+    println!("To have the service survive logout:");
+    println!("  sudo loginctl enable-linger $USER");
 
     Ok(())
 }

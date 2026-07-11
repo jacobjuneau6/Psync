@@ -1,0 +1,24 @@
+[Unit]
+Description=pwr-server — Lazy Project Archiver daemon (user)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/pwr-server --config %h/.config/pwr/server.toml start --foreground
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pwr-server
+
+# Security hardening (user-level)
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+# Resource limits
+LimitNOFILE=4096
+MemoryMax=512M
+
+[Install]
+WantedBy=default.target

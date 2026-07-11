@@ -5,7 +5,7 @@
 //! intended to be called from blocking contexts.
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -72,8 +72,20 @@ impl PwrClient {
         let addr = config.server_addr();
         let timeout = Duration::from_secs(config.connect_timeout_secs);
 
+        // Resolve the hostname (or IP) to socket addresses.
+        // This supports DNS hostnames like "arch" or "nas.local", not just
+        // raw IP addresses.
+        let addrs: Vec<_> = addr
+            .to_socket_addrs()
+            .map_err(|e| format!("Cannot resolve {}: {}", addr, e))?
+            .collect();
+
+        if addrs.is_empty() {
+            return Err(format!("No addresses found for {}", addr));
+        }
+
         let tcp_stream = TcpStream::connect_timeout(
-            &addr.parse().map_err(|e| format!("Invalid address: {}", e))?,
+            &addrs[0],
             timeout,
         )
         .map_err(|e| format!("Connection to {} failed: {}", addr, e))?;
