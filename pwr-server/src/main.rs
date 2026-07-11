@@ -363,9 +363,11 @@ fn cmd_status(config_path: &PathBuf) -> Result<(), String> {
         println!("  TLS:          certificate MISSING — run 'init' first");
     }
 
-    // Try to connect to check if server is running
+    // Try to connect to check if server is running (use localhost
+    // since the bind address might be [::] or 0.0.0.0)
+    let check_addr = format!("localhost:{}", cfg.listen_port);
     match std::net::TcpStream::connect_timeout(
-        &cfg.bind_addr().parse().unwrap(),
+        &check_addr.parse().unwrap(),
         std::time::Duration::from_secs(2),
     ) {
         Ok(_) => println!("  Server:       RUNNING (port {})", cfg.listen_port),

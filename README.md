@@ -125,7 +125,7 @@ transfer_timeout_secs = 300
 
 ```toml
 version = 1
-listen_address = "0.0.0.0"
+listen_address = "[::]"
 listen_port = 9742
 storage_base_path = "/srv/pwr/projects"
 max_project_size_gb = 500
@@ -147,6 +147,27 @@ cargo build --release           # CLI only
 cargo build --release --features tui  # With TUI
 cargo test                      # Run all tests
 ```
+
+## Compatibility
+
+| Platform | Status |
+|---|---|
+| **Linux** (x86_64, aarch64) | ✅ Full support — server, client, TUI, systemd service |
+| **macOS** | ❌ Not supported — uses Linux-specific APIs (libc, systemd) |
+| **Windows** | ❌ Not supported — uses Unix domain sockets and POSIX APIs |
+
+The server and client both use:
+- `libc` for daemonization, signal handling, and raw socket options
+- systemd for service management (`--with-service`)
+- Unix filesystem permissions (`chmod 0o600` for private keys)
+
+These are deeply embedded and not abstracted behind platform gates.
+A macOS client-only port (without the TUI or daemon features) may be
+feasible; a Windows port is unlikely.
+
+Both IPv4 and IPv6 are supported. The server binds dual-stack by default
+(`[::]`) and falls back to `0.0.0.0` if IPv6 is unavailable. The client
+tries all resolved addresses (v6 first, then v4).
 
 ## License
 

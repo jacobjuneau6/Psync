@@ -138,7 +138,7 @@ pub struct ServerConfig {
 }
 
 fn default_listen_address() -> String {
-    "0.0.0.0".into()
+    "[::]".into()
 }
 
 fn default_port() -> u16 {

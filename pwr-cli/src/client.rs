@@ -74,7 +74,8 @@ impl PwrClient {
 
         // Resolve the hostname (or IP) to socket addresses.
         // This supports DNS hostnames like "arch" or "nas.local", not just
-        // raw IP addresses.
+        // raw IP addresses. Returns both IPv6 and IPv4 addresses — we try
+        // them in order (typically v6 first) and use the first that connects.
         let addrs: Vec<_> = addr
             .to_socket_addrs()
             .map_err(|e| format!("Cannot resolve {}: {}", addr, e))?
@@ -84,31 +85,40 @@ impl PwrClient {
             return Err(format!("No addresses found for {}", addr));
         }
 
-        let tcp_stream = TcpStream::connect_timeout(
-            &addrs[0],
-            timeout,
-        )
-        .map_err(|e| format!("Connection to {} failed: {}", addr, e))?;
+        // Try each resolved address until one connects
+        let mut last_err = String::new();
+        for a in &addrs {
+            match TcpStream::connect_timeout(a, timeout) {
+                Ok(stream) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(30)))
+                        .map_err(|e| format!("set_read_timeout: {}", e))?;
 
-        tcp_stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .map_err(|e| format!("set_read_timeout: {}", e))?;
+                    let psk = crypto::psk_from_hex(&config.server_psk)
+                        .map_err(|e| format!("Invalid PSK: {}", e))?;
 
-        let psk = crypto::psk_from_hex(&config.server_psk)
-            .map_err(|e| format!("Invalid PSK: {}", e))?;
+                    let (stream, decoder) = if tls {
+                        let mut tls_stream = connect_tls(stream, config)?;
+                        let mut decoder = FrameDecoder::new();
+                        perform_handshake(&mut tls_stream, &mut decoder, &psk, "pwr-cli")?;
+                        (Box::new(tls_stream) as Box<dyn ReadWrite>, decoder)
+                    } else {
+                        let mut decoder = FrameDecoder::new();
+                        perform_handshake(&mut &stream, &mut decoder, &psk, "pwr-cli")?;
+                        (Box::new(stream) as Box<dyn ReadWrite>, decoder)
+                    };
 
-        let (stream, decoder) = if tls {
-            let mut tls_stream = connect_tls(tcp_stream, config)?;
-            let mut decoder = FrameDecoder::new();
-            perform_handshake(&mut tls_stream, &mut decoder, &psk, "pwr-cli")?;
-            (Box::new(tls_stream) as Box<dyn ReadWrite>, decoder)
-        } else {
-            let mut decoder = FrameDecoder::new();
-            perform_handshake(&mut &tcp_stream, &mut decoder, &psk, "pwr-cli")?;
-            (Box::new(tcp_stream) as Box<dyn ReadWrite>, decoder)
-        };
+                    return Ok(Self { stream, decoder });
+                }
+                Err(e) => {
+                    log::debug!("  {}: {}", a, e);
+                    last_err = format!("{}: {}", a, e);
+                }
+            }
+        }
 
-        Ok(Self { stream, decoder })
+        Err(format!("Connection to {} failed (tried {} addresses): {}",
+            addr, addrs.len(), last_err))
     }
 
     /// Archive a project: send the encrypted archive blob to the server.

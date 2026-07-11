@@ -16,6 +16,19 @@ encrypted, integrity-verified, and happen over TLS.
 - **`pwr-server`** — daemon. Runs on the NAS, stores encrypted project blobs on
   disk, and serves them back to authorized clients.
 
+### Platform support
+
+| Platform | Status |
+|---|---|
+| **Linux** (x86_64, aarch64) | ✅ Full support — server, client, TUI, systemd service |
+| **macOS** | ❌ Not supported |
+| **Windows** | ❌ Not supported |
+
+pwr uses Linux-specific APIs throughout: `libc` for daemonization and raw
+socket options, systemd for service management, and Unix filesystem
+permissions. Both IPv4 and IPv6 are supported — the server binds dual-stack
+by default.
+
 ---
 
 ## Table of contents
@@ -133,7 +146,7 @@ sudo loginctl enable-linger $USER
 ```
 
 ### 4. Configure the client
-
+### Currently only works with IPv4 so the hostname must resolve to and IPv4 address
 ```bash
 # Use the PSK hex string printed by pwr-server init
 pwr init --server-host localhost --psk <hex-from-server-init>
