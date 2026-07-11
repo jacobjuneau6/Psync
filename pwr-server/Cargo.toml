@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme = "../README.md"
 description = "pwr daemon: runs on the NAS, handles project storage and retrieval over TLS"
+documentation = "https://docs.rs/pwr-server"
+keywords = ["archive", "backup", "server", "tls", "daemon"]
+categories = ["network-programming"]
 
 [lib]
 name = "pwr_server"
@@ -16,7 +20,7 @@ name = "pwr-server"
 path = "src/main.rs"
 
 [dependencies]
-pwr-core = { path = "../pwr-core" }
+pwr-core = { version = "0.1.0", path = "../pwr-core" }
 tokio.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
@@ -36,6 +40,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 log.workspace = true
 dirs.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

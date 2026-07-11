@@ -13,6 +13,7 @@
 mod auth;
 mod cert;
 mod config;
+mod daemon;
 mod handler;
 mod listener;
 mod storage;
@@ -48,11 +49,22 @@ enum Commands {
         foreground: bool,
     },
 
+    /// Stop a running pwr-server daemon
+    Stop,
+
     /// Show server status and configuration summary
     Status,
 }
 
 fn main() {
+    // Explicitly install the ring crypto provider before any TLS code runs.
+    // This is necessary because some transitive dependencies (rcgen,
+    // rustls-webpki) pull in aws-lc-rs alongside ring, which prevents
+    // rustls from auto-detecting which provider to use.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls ring crypto provider");
+
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -67,6 +79,7 @@ fn main() {
     let result = match cli.command {
         Commands::Init { hostname } => cmd_init(&cli.config, hostname),
         Commands::Start { foreground } => cmd_start(&cli.config, foreground),
+        Commands::Stop => cmd_stop(),
         Commands::Status => cmd_status(&cli.config),
     };
 
@@ -115,7 +128,10 @@ fn cmd_start(config_path: &PathBuf, foreground: bool) -> Result<(), String> {
     tracing::info!("Bind: {}", server_config.bind_addr());
 
     if !foreground {
-        tracing::info!("Daemonizing is not yet implemented — running in foreground");
+        // Daemonize before starting the listener. After this call returns,
+        // we are the grandchild process with no controlling terminal.
+        daemon::daemonize(daemon::DEFAULT_PID_FILE.as_ref())?;
+        tracing::info!("Daemonized successfully (PID file: {})", daemon::DEFAULT_PID_FILE);
     }
 
     // Run the listener (blocks until shutdown signal)
@@ -158,4 +174,20 @@ fn cmd_status(config_path: &PathBuf) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn cmd_stop() -> Result<(), String> {
+    match daemon::stop_daemon(daemon::DEFAULT_PID_FILE.as_ref()) {
+        Ok(summary) => {
+            println!("{}", summary);
+            Ok(())
+        }
+        Err(e) => {
+            // Distinguish "not running / stale PID" from a real failure:
+            // stop_daemon returns an Err for both, but we still exit 0 for
+            // "nothing to stop" to avoid breaking scripts.
+            eprintln!("{}", e);
+            Ok(())
+        }
+    }
 }

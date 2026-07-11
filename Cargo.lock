@@ -1596,6 +1596,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "libc",
  "log",
  "pwr-core",
  "rcgen",

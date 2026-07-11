@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme = "../README.md"
 description = "pwr: Lazy project archiver — client CLI and TUI for the pwr-server daemon"
+documentation = "https://docs.rs/pwr"
+keywords = ["archive", "backup", "cli", "tui", "encryption"]
+categories = ["command-line-utilities"]
 
 [lib]
 name = "pwr"
@@ -16,7 +20,7 @@ name = "pwr"
 path = "src/main.rs"
 
 [dependencies]
-pwr-core = { path = "../pwr-core" }
+pwr-core = { version = "0.1.0", path = "../pwr-core" }
 tokio.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true

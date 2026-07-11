@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme = "../README.md"
 description = "Shared types, protocol definitions, and cryptographic primitives for pwr"
+documentation = "https://docs.rs/pwr-core"
+keywords = ["archive", "backup", "encryption", "tarball"]
+categories = ["filesystem", "cryptography"]
 
 [dependencies]
 serde.workspace = true
