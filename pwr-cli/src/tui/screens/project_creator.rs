@@ -100,6 +100,39 @@ impl Screen for ProjectCreatorScreen {
     }
 
     fn handle_input(&mut self, key: KeyEvent) -> bool {
+        // Ctrl+S must be checked BEFORE the generic Char(c) arm, otherwise
+        // Char(c) greedily matches 's' (with or without modifiers) and the
+        // save handler is never reached.
+        if key.code == KeyCode::Char('s')
+            && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+        {
+            let path = std::path::PathBuf::from(&self.local_path);
+            if !path.is_dir() {
+                self.status_message = format!("Error: '{}' is not a directory", self.local_path);
+            } else if self.name.is_empty() {
+                self.status_message = "Error: name cannot be empty".into();
+            } else {
+                let remote = format!("server:9742:/srv/pwr/projects/{}", self.name);
+                let meta = pwr_core::metadata::ProjectMeta::new_local(
+                    self.name.clone(),
+                    self.local_path.clone(),
+                    remote,
+                );
+                match pwr_core::project::write_project_file(&path, &meta) {
+                    Ok(()) => {
+                        self.status_message = format!(
+                            "Created .project.toml for '{}'",
+                            self.name
+                        );
+                    }
+                    Err(e) => {
+                        self.status_message = format!("Error: {}", e);
+                    }
+                }
+            }
+            return true;
+        }
+
         match key.code {
             KeyCode::Tab => {
                 self.focus = (self.focus + 1) % 2;
@@ -123,34 +156,6 @@ impl Screen for ProjectCreatorScreen {
                     0 => { self.name.pop(); }
                     1 => { self.local_path.pop(); }
                     _ => {}
-                }
-                true
-            }
-            KeyCode::Char('s') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                // Save .project.toml
-                let path = std::path::PathBuf::from(&self.local_path);
-                if !path.is_dir() {
-                    self.status_message = format!("Error: '{}' is not a directory", self.local_path);
-                } else if self.name.is_empty() {
-                    self.status_message = "Error: name cannot be empty".into();
-                } else {
-                    let remote = format!("server:9742:/srv/pwr/projects/{}", self.name);
-                    let meta = pwr_core::metadata::ProjectMeta::new_local(
-                        self.name.clone(),
-                        self.local_path.clone(),
-                        remote,
-                    );
-                    match pwr_core::project::write_project_file(&path, &meta) {
-                        Ok(()) => {
-                            self.status_message = format!(
-                                "Created .project.toml for '{}'",
-                                self.name
-                            );
-                        }
-                        Err(e) => {
-                            self.status_message = format!("Error: {}", e);
-                        }
-                    }
                 }
                 true
             }

@@ -42,6 +42,16 @@ enum Commands {
         local_root: Option<String>,
     },
 
+    /// Create a .project.toml to start tracking a project
+    Create {
+        /// Path to the project directory (defaults to current directory)
+        path: Option<PathBuf>,
+
+        /// Project name (defaults to directory name)
+        #[arg(long)]
+        name: Option<String>,
+    },
+
     /// Archive a project to the server
     Archive {
         /// Path to the project directory
@@ -127,6 +137,8 @@ fn main() {
             local_root,
         } => cmd_init(server_host, server_port, psk, local_root),
 
+        Commands::Create { path, name } => cmd_create(path, name),
+
         Commands::Archive { path, dry_run } => cmd_archive(path, dry_run),
 
         Commands::Restore { path, dry_run } => cmd_restore(path, dry_run),
@@ -210,6 +222,68 @@ fn cmd_init(
         Ok((_, pk)) => println!("  Age public key: {}", pk),
         Err(e) => println!("  Warning: could not generate age identity: {}", e),
     }
+
+    Ok(())
+}
+
+fn cmd_create(path: Option<PathBuf>, name: Option<String>) -> Result<(), String> {
+    use pwr_core::config::load_config;
+    use pwr_core::project;
+
+    let config = load_config().map_err(|e| format!("Load config: {}", e))?;
+
+    // Determine the project directory
+    let abs_path = if let Some(p) = path {
+        p.canonicalize().map_err(|e| format!("Cannot resolve path: {}", e))?
+    } else {
+        std::env::current_dir().map_err(|e| format!("Current dir: {}", e))?
+    };
+
+    if !abs_path.is_dir() {
+        return Err(format!("Not a directory: {}", abs_path.display()));
+    }
+
+    // Check if already tracked
+    if project::is_tracked(&abs_path) {
+        println!(
+            "Project is already tracked: {}",
+            abs_path.join(project::PROJECT_FILE).display()
+        );
+        return Ok(());
+    }
+
+    // Determine project name
+    let project_name = name.unwrap_or_else(|| {
+        abs_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unnamed")
+            .to_string()
+    });
+
+    let remote_path = format!(
+        "{}:{}/{}",
+        config.server_addr(),
+        config.server_host,
+        project_name
+    );
+
+    let meta = pwr_core::metadata::ProjectMeta::new_local(
+        project_name.clone(),
+        abs_path.to_string_lossy().to_string(),
+        remote_path,
+    );
+
+    project::write_project_file(&abs_path, &meta)
+        .map_err(|e| format!("{}", e))?;
+
+    println!("Created project '{}'", project_name);
+    println!("  Path:  {}", abs_path.display());
+    println!("  UUID:  {}", meta.uuid);
+    println!("  State: local");
+    println!();
+    println!("To archive this project:");
+    println!("  pwr archive {}", abs_path.display());
 
     Ok(())
 }
