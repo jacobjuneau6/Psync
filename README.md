@@ -1,3 +1,6 @@
+# Note
+Stardance reviewers, both the client and server can be run on the same machine.
+
 # Psync
 
 Archive projects from your laptop to a NAS, restore them when you need them
