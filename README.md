@@ -4,8 +4,7 @@ Stardance reviewers, both the client and server can be run on the same machine.
 # Psync
 
 Archive projects from your laptop to a NAS, restore them when you need them
-back. Like rsync but the server never sees your data — everything is encrypted
-on the client with age before it leaves the machine.
+back. Like rsync however the data is not readable by the server, only by the client.
 
 Linux only. Uses systemd for the daemon and a handful of Linux-specific APIs
 under the hood.
@@ -14,8 +13,7 @@ under the hood.
 
 You run `pwr-server` on your NAS and `pwr` on your laptop. They talk over TLS
 1.3 with certificate pinning and PSK-based auth. Before anything leaves the
-client, it gets encrypted with age (X25519). The server just stores ciphertext
-and serves it back on request — it has no way to decrypt anything.
+client, it gets encrypted with age (X25519). The server stores the encrypted data and has no knowledge of the keys to decrypt it.
 
 When you archive a project, pwr tars it, encrypts the tarball, uploads it, and
 replaces the directory with a tiny `.project.toml` placeholder. If you set up
@@ -24,7 +22,7 @@ the shell hook, `cd`-ing into that directory auto-restores it.
 ## Quick start
 
 You need Rust (install via [rustup.rs](https://rustup.rs)) and a Linux box.
-Run the server on your NAS and the client on your laptop. To kick the tires,
+Run the server on your NAS and the client on your laptop. To test it out,
 run both on one machine with `localhost` as the host.
 
 ### Install
@@ -43,8 +41,7 @@ only want the CLI.
 pwr-server init --with-service
 ```
 
-This generates a TLS cert, a PSK, a config file, and a systemd unit — all in
-one shot. It prints the PSK at the end; save it, you'll give it to the client.
+This generates a TLS cert, a PSK, a config file, and a systemd unit in one command. It prints the PSK at the end; save it, you'll give it to the client.
 
 As root it installs a system-wide service. As a normal user everything lives
 under `~/.config/pwr/`.
@@ -180,16 +177,11 @@ cargo test
 
 ## Platform support
 
-Linux only, on x86_64 and aarch64. Both IPv4 and IPv6 work — the server binds
-dual-stack (`[::]`) and falls back to `0.0.0.0` if IPv6 isn't available. The
-client tries v6 addresses first, then v4.
+Linux only, on x86_64 and aarch64. Both IPv4 and IPv6 work with the server prioritizing IPv6 over IPv4.
 
 The server and client use libc (daemonization, signal handling, socket ops),
 systemd (service management), and Unix permission bits (locking down key
-files). These aren't gated behind platform features — they're just how the
-code works, so porting to macOS or Windows would be a significant effort. A
-macOS client-only build (no TUI, no daemon) might be feasible, but it's not
-something I'm working on.
+files) meaning that it will likely not be coming to any other platforms any time soon.
 
 ## License
 
